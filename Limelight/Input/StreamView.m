@@ -15,14 +15,24 @@
 #import "AbsoluteTouchHandler.h"
 #import "KeyboardInputField.h"
 
+#if !TARGET_OS_TV
+#import "KeyBarView.h"
+
+@interface StreamView () <KeyBarViewDelegate>
+@end
+#endif
+
 static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
 
 @implementation StreamView {
     OnScreenControls* onScreenControls;
-    
+
     KeyboardInputField* keyInputField;
     BOOL isInputingText;
     NSMutableSet* keysDown;
+#if !TARGET_OS_TV
+    KeyBarView* keyBar;
+#endif
     
     float streamAspectRatio;
     
@@ -355,6 +365,9 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
             if (isInputingText) {
                 Log(LOG_D, @"Closing the keyboard");
                 [keyInputField resignFirstResponder];
+#if !TARGET_OS_TV
+                [self dismissKeyBar];
+#endif
                 isInputingText = false;
             } else {
                 Log(LOG_D, @"Opening the keyboard");
@@ -362,23 +375,21 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
                 keyInputField.delegate = self;
                 keyInputField.text = @"0";
 #if !TARGET_OS_TV
-                // Prepare the toolbar above the keyboard for more options
-                UIToolbar *customToolbarView = [[UIToolbar alloc] initWithFrame:CGRectMake(0, 0, self.bounds.size.width, 44)];
-                
-                UIBarButtonItem *doneBarButton = [self createButtonWithImageNamed:@"DoneIcon.png" backgroundColor:[UIColor clearColor] target:self action:@selector(toolbarButtonClicked:) keyCode:0x00 isToggleable:NO];
-                UIBarButtonItem *windowsBarButton = [self createButtonWithImageNamed:@"WindowsIcon.png" backgroundColor:[UIColor blackColor] target:self action:@selector(toolbarButtonClicked:) keyCode:0x5B isToggleable:YES];
-                UIBarButtonItem *tabBarButton = [self createButtonWithImageNamed:@"TabIcon.png" backgroundColor:[UIColor blackColor] target:self action:@selector(toolbarButtonClicked:) keyCode:0x09 isToggleable:NO];
-                UIBarButtonItem *shiftBarButton = [self createButtonWithImageNamed:@"ShiftIcon.png" backgroundColor:[UIColor blackColor] target:self action:@selector(toolbarButtonClicked:) keyCode:0xA0 isToggleable:YES];
-                UIBarButtonItem *escapeBarButton = [self createButtonWithImageNamed:@"EscapeIcon.png" backgroundColor:[UIColor blackColor] target:self action:@selector(toolbarButtonClicked:) keyCode:0x1B isToggleable:NO];
-                UIBarButtonItem *controlBarButton = [self createButtonWithImageNamed:@"ControlIcon.png" backgroundColor:[UIColor blackColor] target:self action:@selector(toolbarButtonClicked:) keyCode:0xA2 isToggleable:YES];
-                UIBarButtonItem *altBarButton = [self createButtonWithImageNamed:@"AltIcon.png" backgroundColor:[UIColor blackColor] target:self action:@selector(toolbarButtonClicked:) keyCode:0xA4 isToggleable:YES];
-                UIBarButtonItem *deleteBarButton = [self createButtonWithImageNamed:@"DeleteIcon.png" backgroundColor:[UIColor blackColor] target:self action:@selector(toolbarButtonClicked:) keyCode:0x2E isToggleable:NO];
-                UIBarButtonItem *flexibleSpace = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace target:nil action:nil];
-                
-                [customToolbarView setItems:[NSArray arrayWithObjects:doneBarButton, windowsBarButton, escapeBarButton, tabBarButton, shiftBarButton, controlBarButton, altBarButton, deleteBarButton, flexibleSpace, nil]];
-                keyInputField.inputAccessoryView = customToolbarView;
-#endif
+                keyBar = [[KeyBarView alloc] initWithFrame:CGRectMake(0, 0, self.bounds.size.width, 44)];
+                keyBar.delegate = self;
+
+                if ([self hasHardwareKeyboard]) {
+                    // With a hardware keyboard attached there is nothing to type on screen,
+                    // and the system keyboard would cover half the picture for no reason.
+                    // Show only the key bar, as Jump Desktop and RealVNC both do.
+                    [self showPinnedKeyBar];
+                } else {
+                    keyInputField.inputAccessoryView = keyBar;
+                    [keyInputField becomeFirstResponder];
+                }
+#else
                 [keyInputField becomeFirstResponder];
+#endif
                 [keyInputField addTarget:self action:@selector(onKeyboardPressed:) forControlEvents:UIControlEventEditingChanged];
                 
                 // Undo causes issues for our state management, so turn it off
@@ -389,6 +400,55 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
         }
     }
 }
+
+#if !TARGET_OS_TV
+
+/// Whether a physical keyboard is attached, in which case the system keyboard is dead weight.
+- (BOOL)hasHardwareKeyboard {
+    if (@available(iOS 14.0, *)) {
+        return [GCKeyboard coalescedKeyboard] != nil;
+    }
+    return NO;
+}
+
+/// Pins the key bar to the bottom of the view, for use without the system keyboard.
+- (void)showPinnedKeyBar {
+    if (keyBar.superview != nil) {
+        return;
+    }
+
+    keyBar.translatesAutoresizingMaskIntoConstraints = NO;
+    [self addSubview:keyBar];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [keyBar.leadingAnchor constraintEqualToAnchor:self.leadingAnchor],
+        [keyBar.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
+        [keyBar.bottomAnchor constraintEqualToAnchor:self.bottomAnchor],
+    ]];
+}
+
+/// Tears the key bar down by whichever route it was shown, releasing any held modifiers.
+///
+/// Skipping the release would leave the host with a modifier stuck down, and every
+/// subsequent keystroke would silently arrive modified.
+- (void)dismissKeyBar {
+    [keyBar releaseHeldModifiers];
+
+    if (keyBar.superview != nil) {
+        [keyBar removeFromSuperview];
+    }
+
+    keyInputField.inputAccessoryView = nil;
+    keyBar = nil;
+}
+
+- (void)keyBarDidRequestDismiss {
+    [keyInputField resignFirstResponder];
+    [self dismissKeyBar];
+    isInputingText = false;
+}
+
+#endif
 
 - (UIBarButtonItem *)createButtonWithImageNamed:(NSString *)imageName backgroundColor:(UIColor *)backgroundColor target:(id)target action:(SEL)action keyCode:(NSInteger)keyCode isToggleable:(BOOL)isToggleable {
     UIImage *image = [UIImage imageNamed:imageName];
