@@ -452,33 +452,49 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
 /// desktop fills the screen to within a few points, so there is no free edge and the bar sits
 /// along the bottom, blurred, over picture.
 - (void)pinKeyBar {
-    if (keyBar.superview == self) {
+    UIView *host = [self keyBarHostView];
+    if (keyBar.superview == host) {
         return;
     }
 
     CGSize video = [self getVideoAreaSize];
-    CGFloat sideMargin = (self.bounds.size.width - video.width) / 2;
-    CGFloat bottomMargin = (self.bounds.size.height - video.height) / 2;
+    CGFloat sideMargin = (host.bounds.size.width - video.width) / 2;
+    CGFloat bottomMargin = (host.bounds.size.height - video.height) / 2;
     BOOL sideIsFree = sideMargin >= [KeyBarView barThickness] && sideMargin > bottomMargin;
 
     [keyBar setAxis:sideIsFree ? UILayoutConstraintAxisVertical : UILayoutConstraintAxisHorizontal];
 
     keyBar.translatesAutoresizingMaskIntoConstraints = NO;
-    [self addSubview:keyBar];
+    [host addSubview:keyBar];
 
     if (sideIsFree) {
         [NSLayoutConstraint activateConstraints:@[
-            [keyBar.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
-            [keyBar.topAnchor constraintEqualToAnchor:self.topAnchor],
-            [keyBar.bottomAnchor constraintEqualToAnchor:self.bottomAnchor],
+            [keyBar.trailingAnchor constraintEqualToAnchor:host.trailingAnchor],
+            [keyBar.topAnchor constraintEqualToAnchor:host.topAnchor],
+            [keyBar.bottomAnchor constraintEqualToAnchor:host.bottomAnchor],
         ]];
     } else {
         [NSLayoutConstraint activateConstraints:@[
-            [keyBar.leadingAnchor constraintEqualToAnchor:self.leadingAnchor],
-            [keyBar.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
-            [keyBar.bottomAnchor constraintEqualToAnchor:self.bottomAnchor],
+            [keyBar.leadingAnchor constraintEqualToAnchor:host.leadingAnchor],
+            [keyBar.trailingAnchor constraintEqualToAnchor:host.trailingAnchor],
+            [keyBar.bottomAnchor constraintEqualToAnchor:host.bottomAnchor],
         ]];
     }
+}
+
+/// The view the key bar hangs off.
+///
+/// In touchscreen mode the stream view sits inside a UIScrollView so the picture can be
+/// pinched and panned. Anything parented to the stream view is scaled and scrolled with the
+/// picture — a key bar attached there grows to ten times its size and slides off screen the
+/// moment you zoom. The bar is a control, not part of the image, so it hangs off the scroll
+/// view's parent, which does not move. In trackpad mode there is no scroll view and the
+/// stream view is itself the right parent.
+- (UIView *)keyBarHostView {
+    if ([self.superview isKindOfClass:[UIScrollView class]] && self.superview.superview != nil) {
+        return self.superview.superview;
+    }
+    return self;
 }
 
 - (void)keyBarDidToggleSystemKeyboard {
