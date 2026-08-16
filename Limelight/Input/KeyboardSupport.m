@@ -483,10 +483,22 @@ static const useconds_t modifierSettleTime = 30 * 1000;
             LiSendKeyboardEvent(virtualKey.shortValue, KEY_ACTION_DOWN, modifierMask);
         }
 
+        // The modifier must be down before the key it modifies arrives, not in the same
+        // instant. Sent back to back these reached the host in the same millisecond, and
+        // Control-Space switched the input source only about half the time.
+        if (heldKeys.count > 0) {
+            usleep(modifierSettleTime);
+        }
+
         // Non-normalized, as in the other paths: these are not necessarily US English scancodes.
         LiSendKeyboardEvent2(keyCode, KEY_ACTION_DOWN, modifierMask, SS_KBE_FLAG_NON_NORMALIZED);
         usleep(50 * 1000);
         LiSendKeyboardEvent2(keyCode, KEY_ACTION_UP, modifierMask, SS_KBE_FLAG_NON_NORMALIZED);
+
+        // And still down when it is released, for the same reason.
+        if (heldKeys.count > 0) {
+            usleep(modifierSettleTime);
+        }
 
         // Release in reverse, so the host never sees a modifier outlive the chord.
         for (NSNumber *virtualKey in heldKeys.reverseObjectEnumerator) {
