@@ -16,6 +16,12 @@ NS_ASSUME_NONNULL_BEGIN
 /// The dismiss key was pressed.
 - (void)keyBarDidRequestDismiss;
 
+/// The keyboard key was pressed: show the system keyboard if it is hidden, hide it if not.
+///
+/// The bar stays either way. Held modifiers must survive the switch — this changes what is
+/// on screen, not what the host thinks is pressed.
+- (void)keyBarDidToggleSystemKeyboard;
+
 @end
 
 @interface KeyBarView : UIView
@@ -27,6 +33,9 @@ NS_ASSUME_NONNULL_BEGIN
 /// Must be called when the stream ends or the bar goes away, otherwise the host is left
 /// with a modifier stuck down and every later keystroke arrives modified.
 - (void)releaseHeldModifiers;
+
+/// Updates the keyboard key to reflect whether the system keyboard is currently showing.
+- (void)setSystemKeyboardVisible:(BOOL)visible;
 
 @end
 

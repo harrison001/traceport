@@ -16,6 +16,8 @@ typedef NS_ENUM(NSInteger, KeyBarKeyKind) {
     KeyBarKeyKindModifier,
     /// Dismisses the bar.
     KeyBarKeyKindDismiss,
+    /// Shows or hides the system keyboard, leaving the bar in place.
+    KeyBarKeyKindKeyboardToggle,
 };
 
 /// What a modifier is currently doing.
@@ -61,6 +63,7 @@ static const CGFloat rowHorizontalInset = 12;
 @implementation KeyBarView {
     UIStackView *_row;
     NSMutableArray<KeyBarButton *> *_modifierButtons;
+    KeyBarButton *_keyboardToggle;
 }
 
 /// iPad gets bigger keys than iPhone, as RealVNC does — there is room for them and they are
@@ -167,7 +170,16 @@ static const CGFloat rowHorizontalInset = 12;
     [self addGroupSeparator];
 
     [self addMacroButton];
+    _keyboardToggle = [self addKeyWithTitle:@"⌨" kind:KeyBarKeyKindKeyboardToggle virtualKey:0 modifierMask:0];
     [self addKeyWithTitle:@"Done" kind:KeyBarKeyKindDismiss virtualKey:0 modifierMask:0];
+}
+
+- (void)setSystemKeyboardVisible:(BOOL)visible {
+    // Struck through when tapping it would bring the keyboard back.
+    [_keyboardToggle setTitle:visible ? @"⌨" : @"⌨̶" forState:UIControlStateNormal];
+    _keyboardToggle.backgroundColor = visible
+        ? [UIColor secondarySystemGroupedBackgroundColor]
+        : [UIColor systemGray3Color];
 }
 
 /// One button opening a menu of named actions, rather than a dozen more keys.
@@ -214,10 +226,10 @@ static const CGFloat rowHorizontalInset = 12;
     [_row addArrangedSubview:spacer];
 }
 
-- (void)addKeyWithTitle:(NSString *)title
-                   kind:(KeyBarKeyKind)kind
-             virtualKey:(short)virtualKey
-           modifierMask:(char)modifierMask {
+- (KeyBarButton *)addKeyWithTitle:(NSString *)title
+                             kind:(KeyBarKeyKind)kind
+                       virtualKey:(short)virtualKey
+                     modifierMask:(char)modifierMask {
     KeyBarButton *button = [KeyBarButton buttonWithType:UIButtonTypeSystem];
     button.kind = kind;
     button.virtualKey = virtualKey;
@@ -247,6 +259,8 @@ static const CGFloat rowHorizontalInset = 12;
 
     [self applyAppearance:button];
     [_row addArrangedSubview:button];
+
+    return button;
 }
 
 - (void)applyAppearance:(KeyBarButton *)button {
@@ -281,6 +295,10 @@ static const CGFloat rowHorizontalInset = 12;
     switch (button.kind) {
         case KeyBarKeyKindDismiss:
             [self.delegate keyBarDidRequestDismiss];
+            return;
+
+        case KeyBarKeyKindKeyboardToggle:
+            [self.delegate keyBarDidToggleSystemKeyboard];
             return;
 
         case KeyBarKeyKindModifier:

@@ -32,6 +32,7 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     NSMutableSet* keysDown;
 #if !TARGET_OS_TV
     KeyBarView* keyBar;
+    BOOL systemKeyboardVisible;
 #endif
     
     float streamAspectRatio;
@@ -378,15 +379,11 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
                 keyBar = [[KeyBarView alloc] initWithFrame:CGRectMake(0, 0, self.bounds.size.width, 44)];
                 keyBar.delegate = self;
 
-                if ([self hasHardwareKeyboard]) {
-                    // With a hardware keyboard attached there is nothing to type on screen,
-                    // and the system keyboard would cover half the picture for no reason.
-                    // Show only the key bar, as Jump Desktop and RealVNC both do.
-                    [self showPinnedKeyBar];
-                } else {
-                    keyInputField.inputAccessoryView = keyBar;
-                    [keyInputField becomeFirstResponder];
-                }
+                // With a hardware keyboard attached there is nothing to type on screen, and
+                // the system keyboard would cover half the picture for no reason. Start
+                // without it, as Jump Desktop and RealVNC do — but this is only the starting
+                // point now; the bar carries a key to change it either way.
+                [self presentKeyBarWithSystemKeyboard:![self hasHardwareKeyboard]];
 #else
                 [keyInputField becomeFirstResponder];
 #endif
@@ -411,9 +408,32 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     return NO;
 }
 
+/// Shows the key bar, with or without the system keyboard under it.
+///
+/// The bar is the same object either way, so held modifiers survive the switch: this changes
+/// what is on screen, not what the host believes is pressed.
+- (void)presentKeyBarWithSystemKeyboard:(BOOL)withSystemKeyboard {
+    if (withSystemKeyboard) {
+        // As an inputAccessoryView, UIKit owns the frame.
+        [keyBar removeFromSuperview];
+        keyBar.translatesAutoresizingMaskIntoConstraints = YES;
+
+        keyInputField.inputAccessoryView = keyBar;
+        [keyInputField reloadInputViews];
+        [keyInputField becomeFirstResponder];
+    } else {
+        [keyInputField resignFirstResponder];
+        keyInputField.inputAccessoryView = nil;
+        [self pinKeyBarToBottom];
+    }
+
+    systemKeyboardVisible = withSystemKeyboard;
+    [keyBar setSystemKeyboardVisible:withSystemKeyboard];
+}
+
 /// Pins the key bar to the bottom of the view, for use without the system keyboard.
-- (void)showPinnedKeyBar {
-    if (keyBar.superview != nil) {
+- (void)pinKeyBarToBottom {
+    if (keyBar.superview == self) {
         return;
     }
 
@@ -425,6 +445,10 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
         [keyBar.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
         [keyBar.bottomAnchor constraintEqualToAnchor:self.bottomAnchor],
     ]];
+}
+
+- (void)keyBarDidToggleSystemKeyboard {
+    [self presentKeyBarWithSystemKeyboard:!systemKeyboardVisible];
 }
 
 /// Tears the key bar down by whichever route it was shown, releasing any held modifiers.
