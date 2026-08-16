@@ -51,9 +51,18 @@ static const CGFloat rowHorizontalInset = 12;
 @interface KeyBarPanel : UIView
 @property (nonatomic, strong, readonly) UIScrollView *scrollView;
 @property (nonatomic, strong, readonly) UIStackView *stack;
+/// Whether the blurred slab behind the keys is drawn. Off when the keys float over black.
+@property (nonatomic, assign) BOOL showsBackground;
 @end
 
-@implementation KeyBarPanel
+@implementation KeyBarPanel {
+    UIVisualEffectView *_blur;
+}
+
+- (void)setShowsBackground:(BOOL)showsBackground {
+    _showsBackground = showsBackground;
+    _blur.hidden = !showsBackground;
+}
 
 - (instancetype)initWithFrame:(CGRect)frame {
     self = [super initWithFrame:frame];
@@ -66,10 +75,12 @@ static const CGFloat rowHorizontalInset = 12;
     // unavoidably covers picture. Blur rather than a solid fill, so what it covers stays
     // legible underneath.
     self.backgroundColor = [UIColor clearColor];
+    _showsBackground = YES;
     UIVisualEffectView *blur = [[UIVisualEffectView alloc]
         initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemChromeMaterial]];
     blur.translatesAutoresizingMaskIntoConstraints = NO;
     [self addSubview:blur];
+    _blur = blur;
 
     _scrollView = [[UIScrollView alloc] initWithFrame:CGRectZero];
     _scrollView.translatesAutoresizingMaskIntoConstraints = NO;
@@ -78,12 +89,22 @@ static const CGFloat rowHorizontalInset = 12;
     // The bar is thin; bouncing makes it feel loose.
     _scrollView.alwaysBounceHorizontal = NO;
     _scrollView.alwaysBounceVertical = NO;
+    // A scroll view adds the safe area to its content inset by default. Once a column is flush
+    // with the screen edge that means 59pt of inset on the outer side in landscape, which
+    // squeezes a 139pt column of keys down to 60pt and truncates every label to an ellipsis.
+    // The panel is already positioned deliberately; it does not want the help.
+    _scrollView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
     [self addSubview:_scrollView];
 
     _stack = [[UIStackView alloc] initWithFrame:CGRectZero];
     _stack.translatesAutoresizingMaskIntoConstraints = NO;
     _stack.spacing = keySpacing;
     _stack.layoutMarginsRelativeArrangement = YES;
+    // A view folds the safe area into its layout margins by default. Down a column flush with
+    // the screen edge that is 59pt of margin on the outer side in landscape, which squeezes
+    // 139pt of keys into 60pt and truncates every label to an ellipsis. The margins here are
+    // deliberate and complete.
+    _stack.insetsLayoutMarginsFromSafeArea = NO;
     [_scrollView addSubview:_stack];
 
     [NSLayoutConstraint activateConstraints:@[
@@ -118,6 +139,22 @@ static UIColor *KeyBarModifierKeyColor(void) {
     return KeyBarColor(0.74, 0.26);
 }
 
+/// Floating keys, for the columns down the letterbox.
+///
+/// The on-screen game controller is the precedent here, and it is in this app already: its
+/// D-pad and its four face buttons are CALayers added straight to the stream view, drawn as
+/// translucent shapes with no slab behind them and no border around them. Over the black
+/// letterbox that reads as part of the app rather than as a panel bolted onto the picture, and
+/// it is what a Moonlight user already knows. A blurred slab is only worth its weight where
+/// the bar has to cover picture, which down the sides it never does.
+static UIColor *KeyBarFloatingKeyColor(void) {
+    return [UIColor colorWithWhite:1.0 alpha:0.22];
+}
+
+static UIColor *KeyBarFloatingModifierColor(void) {
+    return [UIColor colorWithWhite:1.0 alpha:0.11];
+}
+
 /// Where the keys are.
 typedef NS_ENUM(NSInteger, KeyBarLayout) {
     /// One scrolling line along an edge, controls at its far end.
@@ -145,13 +182,14 @@ typedef NS_ENUM(NSInteger, KeyBarLayout) {
     UILayoutConstraintAxis _axis;
     NSArray<NSLayoutConstraint *> *_layoutConstraints;
 
-    /// Modifier buttons on the current page. Rebuilt with the page, but the held state that
-    /// matters lives on the host, so it is re-applied rather than reset.
+    /// Rebuilt whenever the keys are, but the held state that matters lives on the host, so it
+    /// is re-applied rather than reset.
     NSMutableArray<KeyBarButton *> *_modifierButtons;
-    /// Which modifier flags are held, so a page change does not silently drop them.
+    /// Which modifier flags are held, so a rebuild does not silently drop them.
     UIKeyModifierFlags _heldOneShot;
     UIKeyModifierFlags _heldLocked;
 
+    BOOL _systemKeyboardVisible;
     KeyBarButton *_settingsButton;
     KeyBarButton *_keyboardToggle;
     KeyBarButton *_doneButton;
@@ -210,6 +248,7 @@ typedef NS_ENUM(NSInteger, KeyBarLayout) {
     _controls.axis = UILayoutConstraintAxisHorizontal;
     _controls.spacing = keySpacing;
     _controls.layoutMarginsRelativeArrangement = YES;
+    _controls.insetsLayoutMarginsFromSafeArea = NO;
     [_primary addSubview:_controls];
 
     [self applyLayoutConstraints];
@@ -295,6 +334,7 @@ typedef NS_ENUM(NSInteger, KeyBarLayout) {
             _secondaryControls.axis = UILayoutConstraintAxisHorizontal;
             _secondaryControls.spacing = keySpacing;
             _secondaryControls.layoutMarginsRelativeArrangement = YES;
+            _secondaryControls.insetsLayoutMarginsFromSafeArea = NO;
             _secondaryControls.layoutMargins = UIEdgeInsetsMake(keySpacing, rowVerticalInset,
                                                                 rowVerticalInset, rowVerticalInset);
             [_secondary addSubview:_secondaryControls];
@@ -309,13 +349,17 @@ typedef NS_ENUM(NSInteger, KeyBarLayout) {
             foot = self.keyboardLayoutGuide.topAnchor;
         }
 
+        // Flush with the screen edge, not the safe area. In landscape iOS reports a 59pt inset
+        // down both sides; obeying it pushes each column 59pt inwards, which is 59pt onto the
+        // picture — the one place they must not be. The letterbox is the margin, so the columns
+        // are exactly as wide as it is and sit entirely inside it.
         _layoutConstraints = [@[
-            [_secondary.leadingAnchor constraintEqualToAnchor:self.safeAreaLayoutGuide.leadingAnchor],
+            [_secondary.leadingAnchor constraintEqualToAnchor:self.leadingAnchor],
             [_secondary.widthAnchor constraintEqualToConstant:_marginWidth],
             [_secondary.topAnchor constraintEqualToAnchor:self.safeAreaLayoutGuide.topAnchor],
             [_secondary.bottomAnchor constraintEqualToAnchor:foot],
 
-            [_primary.trailingAnchor constraintEqualToAnchor:self.safeAreaLayoutGuide.trailingAnchor],
+            [_primary.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
             [_primary.widthAnchor constraintEqualToConstant:_marginWidth],
             [_primary.topAnchor constraintEqualToAnchor:self.safeAreaLayoutGuide.topAnchor],
             [_primary.bottomAnchor constraintEqualToAnchor:foot],
@@ -361,6 +405,10 @@ typedef NS_ENUM(NSInteger, KeyBarLayout) {
     [NSLayoutConstraint activateConstraints:_layoutConstraints];
     [self placeDoneButton];
 
+    // Floating over black down the sides; a blurred slab only where the bar covers picture.
+    _primary.showsBackground = _layout != KeyBarLayoutSplit;
+    _secondary.showsBackground = NO;
+
     if (_layout == KeyBarLayoutSplit) {
         // Two across a 139pt column: they share it rather than each demanding its own width.
         _controls.distribution = UIStackViewDistributionFillEqually;
@@ -375,6 +423,8 @@ typedef NS_ENUM(NSInteger, KeyBarLayout) {
         _controls.layoutMargins = UIEdgeInsetsMake(keySpacing, rowVerticalInset,
                                                    rowHorizontalInset, rowVerticalInset);
     }
+
+    [self restyleControls];
 
     // The keys must yield to the controls, never the other way round.
     [_controls setContentHuggingPriority:UILayoutPriorityRequired forAxis:_controls.axis];
@@ -602,17 +652,34 @@ typedef NS_ENUM(NSInteger, KeyBarLayout) {
     _doneButton = [self buttonWithTitle:@"Done" wide:YES];
     [_doneButton addTarget:self action:@selector(donePressed) forControlEvents:UIControlEventTouchUpInside];
     [self placeDoneButton];
+    [self restyleControls];
 }
 
 /// Done sits with the other controls when the bar is one line, and alone at the foot of the
 /// left column when it is split, where it gets the whole width instead of a third of it.
 - (void)placeDoneButton {
+    if (_doneButton == nil) {
+        return;  // called once from the layout before the controls exist
+    }
     [_doneButton removeFromSuperview];
     if (_layout == KeyBarLayoutSplit) {
         [_secondaryControls addArrangedSubview:_doneButton];
     } else {
         [_controls addArrangedSubview:_doneButton];
     }
+}
+
+/// The controls carry no KeyItem, so they miss the appearance pass the keys get. Style them by
+/// hand whenever the layout changes, or they stay opaque white while the keys go translucent.
+- (void)restyleControls {
+    for (KeyBarButton *button in @[_settingsButton ?: (KeyBarButton *)NSNull.null,
+                                   _keyboardToggle ?: (KeyBarButton *)NSNull.null,
+                                   _doneButton ?: (KeyBarButton *)NSNull.null]) {
+        if ([button isKindOfClass:[KeyBarButton class]]) {
+            [self applyAppearance:button];
+        }
+    }
+    [self setSystemKeyboardVisible:_systemKeyboardVisible];
 }
 
 - (KeyBarButton *)buttonWithTitle:(NSString *)title wide:(BOOL)wide {
@@ -678,13 +745,21 @@ typedef NS_ENUM(NSInteger, KeyBarLayout) {
 }
 
 - (void)applyAppearance:(KeyBarButton *)button {
+    BOOL floating = _layout == KeyBarLayoutSplit;
+
     switch (button.modifierState) {
         case KeyBarModifierStateOff:
-            // Resting colour encodes the kind of key, as RealVNC does: modifiers read as grey
-            // and everything else as white, so the bar is scannable by shade alone.
-            button.backgroundColor = button.item.kind == KeyItemKindModifier
-                ? KeyBarModifierKeyColor()
-                : KeyBarNormalKeyColor();
+            // Resting colour encodes the kind of key, as RealVNC does: modifiers read one shade
+            // back from everything else, so the bar is scannable without reading the labels.
+            if (floating) {
+                button.backgroundColor = button.item.kind == KeyItemKindModifier
+                    ? KeyBarFloatingModifierColor()
+                    : KeyBarFloatingKeyColor();
+            } else {
+                button.backgroundColor = button.item.kind == KeyItemKindModifier
+                    ? KeyBarModifierKeyColor()
+                    : KeyBarNormalKeyColor();
+            }
             button.layer.borderWidth = 0;
             break;
         case KeyBarModifierStateOneShot:
@@ -696,13 +771,19 @@ typedef NS_ENUM(NSInteger, KeyBarLayout) {
             // Filled and outlined: staying down until tapped again.
             button.backgroundColor = [UIColor systemBlueColor];
             button.layer.borderWidth = 2;
-            button.layer.borderColor = [UIColor labelColor].CGColor;
+            button.layer.borderColor = [UIColor whiteColor].CGColor;
             break;
     }
 
-    button.tintColor = button.modifierState == KeyBarModifierStateOff
-        ? [UIColor labelColor]
-        : [UIColor whiteColor];
+    if (floating) {
+        // Always white: the keys sit on the black letterbox, never on picture, so there is no
+        // light appearance for them to adapt to.
+        button.tintColor = [UIColor whiteColor];
+    } else {
+        button.tintColor = button.modifierState == KeyBarModifierStateOff
+            ? [UIColor labelColor]
+            : [UIColor whiteColor];
+    }
 }
 
 #pragma mark - Input
@@ -936,7 +1017,14 @@ typedef NS_ENUM(NSInteger, KeyBarLayout) {
 }
 
 - (void)setSystemKeyboardVisible:(BOOL)visible {
-    _keyboardToggle.backgroundColor = visible ? KeyBarNormalKeyColor() : KeyBarModifierKeyColor();
+    _systemKeyboardVisible = visible;
+    if (_layout == KeyBarLayoutSplit) {
+        _keyboardToggle.backgroundColor = visible
+            ? KeyBarFloatingKeyColor()
+            : KeyBarFloatingModifierColor();
+    } else {
+        _keyboardToggle.backgroundColor = visible ? KeyBarNormalKeyColor() : KeyBarModifierKeyColor();
+    }
 }
 
 @end
