@@ -58,11 +58,39 @@
     return item;
 }
 
-- (instancetype)explained:(NSString *)detail {
+/// Marks an app jump so it survives a round trip through the stored pad list, which is a list
+/// of labels: the arrow is part of the label, and what follows it is the program's name.
+NSString * const KeyAppJumpPrefix = @"→";
+
++ (instancetype)appJump:(NSString *)appName {
+    KeyItem *item = [self itemWithLabel:[KeyAppJumpPrefix stringByAppendingString:appName]
+                                   kind:KeyItemKindAppJump
+                                   code:0
+                                  flags:0];
+    item->_appName = [appName copy];
+    item->_detail = [NSString stringWithFormat:@"Open %@", appName];
+    return item;
+}
+
+- (instancetype)copyOfSelf {
     KeyItem *copy = [KeyItem itemWithLabel:_label kind:_kind code:_virtualKey flags:_modifiers];
     copy->_steps = _steps;
     copy->_scrollClicks = _scrollClicks;
+    copy->_detail = _detail;
+    copy->_wantsKeyboard = _wantsKeyboard;
+    copy->_appName = _appName;
+    return copy;
+}
+
+- (instancetype)explained:(NSString *)detail {
+    KeyItem *copy = [self copyOfSelf];
     copy->_detail = [detail copy];
+    return copy;
+}
+
+- (instancetype)needingKeyboard {
+    KeyItem *copy = [self copyOfSelf];
+    copy->_wantsKeyboard = YES;
     return copy;
 }
 
@@ -276,7 +304,8 @@ static NSString *KeyHiddenDefaultsKey(NSString *profileKey) {
             [[KeyItem macro:@"⌃→" code:0x27 flags:ctrl] explained:@"Next desktop"],
             [[KeyItem macro:@"⌃↑" code:0x26 flags:ctrl] explained:@"Mission Control"],
             [[KeyItem macro:@"⌃↓" code:0x28 flags:ctrl] explained:@"App Exposé"],
-            [[KeyItem macro:@"⌘Spc" code:0x20 flags:cmd] explained:@"Spotlight"],
+            [[[KeyItem macro:@"⌘Spc" code:0x20 flags:cmd] explained:@"Spotlight — type to search"]
+              needingKeyboard],
             [[KeyItem macro:@"⇧⌘4" code:0x34 flags:cmd | shift] explained:@"Screenshot a selection"],
         ]];
     }
@@ -292,7 +321,8 @@ static NSString *KeyHiddenDefaultsKey(NSString *profileKey) {
         [[KeyItem macro:@"⊞D" code:0x44 flags:win] explained:@"Show the desktop"],
         [[KeyItem macro:@"⊞E" code:0x45 flags:win] explained:@"File Explorer"],
         [[KeyItem macro:@"⊞L" code:0x4C flags:win] explained:@"Lock"],
-        [[KeyItem macro:@"⊞" code:0x5B flags:0] explained:@"Start menu"],
+        [[[KeyItem macro:@"⊞" code:0x5B flags:0] explained:@"Start menu — type to search"]
+          needingKeyboard],
         [[KeyItem macro:@"⌃⇧Esc" code:0x1B flags:UIKeyModifierControl | shift]
          explained:@"Task Manager"],
         [[KeyItem macro:@"⊞⇧S" code:0x53 flags:win | shift] explained:@"Snip"],
@@ -323,9 +353,15 @@ static NSString *KeyHiddenDefaultsKey(NSString *profileKey) {
 /// source toggle that unblocks them. Everything else is two taps away in the add menu.
 + (NSArray<NSString *> *)defaultPadLabelsForHost:(KeyMacroHost)host {
     if (host == KeyMacroHostMacOS) {
-        return @[@"⌘Tab", @"⌘`", @"⌃AZ", @"⌃AB", @"⌃A←", @"⌃A→", @"中/A", @"∧", @"∨"];
+        return @[
+            // Left column: getting to a program or a window, which is what a phone is worst at
+            // and needs most — there is no Dock to click and no second monitor to glance at.
+            @"⌘Spc", @"⌘Tab", @"⌘`", @"⌃↑", @"⌃↓", @"⌃⌘F", @"⌃←", @"⌃→",
+            // Right column: what happens once you are there.
+            @"⌃AZ", @"⌃AB", @"⌃A←", @"⌃A→", @"中/A", @"∧", @"∨",
+        ];
     }
-    return @[@"⎇Tab", @"⊞Tab", @"⊞D", @"⌃C", @"⌃V", @"∧", @"∨"];
+    return @[@"⊞", @"⎇Tab", @"⊞Tab", @"⊞D", @"⊞E", @"⎇F4", @"⌃C", @"⌃V", @"∧", @"∨"];
 }
 
 /// Items are stored by label. Labels are unique within a host's catalogue and survive a
@@ -366,6 +402,10 @@ static NSString *KeyPadDefaultsKey(NSString *profileKey) {
 
     NSMutableArray<KeyItem *> *items = [NSMutableArray array];
     for (NSString *label in labels) {
+        if ([label hasPrefix:KeyAppJumpPrefix]) {
+            [items addObject:[KeyItem appJump:[label substringFromIndex:KeyAppJumpPrefix.length]]];
+            continue;
+        }
         // Silently skips anything this host's catalogue does not have, which is what should
         // happen when the host kind is changed under a stored list.
         KeyItem *item = byLabel[label];
@@ -408,6 +448,15 @@ static NSString *KeyPadDefaultsKey(NSString *profileKey) {
     }
     [labels exchangeObjectAtIndex:index withObjectAtIndex:index - 1];
     [self storePadLabels:labels forProfile:profileKey];
+}
+
++ (void)addAppJump:(NSString *)appName forProfile:(NSString *)profileKey host:(KeyMacroHost)host {
+    NSString *name = [appName stringByTrimmingCharactersInSet:
+                      [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (name.length == 0) {
+        return;
+    }
+    [self addToPad:[KeyItem appJump:name] forProfile:profileKey host:host];
 }
 
 + (void)resetPadForProfile:(NSString *)profileKey {

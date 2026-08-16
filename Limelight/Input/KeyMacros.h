@@ -45,6 +45,13 @@ typedef NS_ENUM(NSInteger, KeyItemKind) {
     /// Turns the mouse wheel. Not a key at all, but it is what the hand wants next to them:
     /// in touchscreen mode two fingers pan the picture, so there is otherwise no way to scroll.
     KeyItemKindScroll,
+    /// Opens a named program: Spotlight, the name, Return.
+    ///
+    /// ⌘Tab only ping-pongs the two most recent apps, so the third one is out of reach — which
+    /// on a phone, where there is no Dock to click, means unreachable. This goes straight to
+    /// any of them by name. Lifted from TraceRecorder's Quick Input panel, where it has been
+    /// the way to switch programs for months.
+    KeyItemKindAppJump,
 };
 
 /// One step of a sequence.
@@ -71,11 +78,22 @@ typedef NS_ENUM(NSInteger, KeyItemKind) {
 /// One line saying what this does, for the add menu. Nothing else in the app has room for it.
 @property (nonatomic, copy, readonly, nullable) NSString *detail;
 
+/// Whether this key leaves something on the host waiting to be typed into, so the keyboard
+/// should come back up with it. Spotlight opened over a dismissed keyboard is a dead end.
+@property (nonatomic, assign, readonly) BOOL wantsKeyboard;
+
+/// For app jumps: the program to open. Nil for everything else.
+@property (nonatomic, copy, readonly, nullable) NSString *appName;
+
 + (instancetype)key:(NSString *)label code:(short)virtualKey;
 + (instancetype)modifier:(NSString *)label code:(short)virtualKey flag:(UIKeyModifierFlags)flag;
 + (instancetype)macro:(NSString *)label code:(short)virtualKey flags:(UIKeyModifierFlags)flags;
 + (instancetype)sequence:(NSString *)label steps:(NSArray<KeyStep *> *)steps;
 + (instancetype)scroll:(NSString *)label clicks:(signed char)clicks;
++ (instancetype)appJump:(NSString *)appName;
+
+/// Returns a copy that brings the keyboard back with it.
+- (instancetype)needingKeyboard;
 
 /// Returns a copy carrying a one-line description. Chainable onto any of the above.
 - (instancetype)explained:(NSString *)detail;
@@ -130,6 +148,11 @@ typedef NS_ENUM(NSInteger, KeyItemKind) {
 + (void)removeFromPad:(KeyItem *)item forProfile:(nullable NSString *)profileKey host:(KeyMacroHost)host;
 /// Moves an item one place towards the front of the pad.
 + (void)promoteOnPad:(KeyItem *)item forProfile:(nullable NSString *)profileKey host:(KeyMacroHost)host;
+/// Adds a one-tap jump to a named program.
++ (void)addAppJump:(NSString *)appName
+        forProfile:(nullable NSString *)profileKey
+              host:(KeyMacroHost)host;
+
 + (void)resetPadForProfile:(nullable NSString *)profileKey;
 + (BOOL)padIsCustomisedForProfile:(nullable NSString *)profileKey;
 

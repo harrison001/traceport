@@ -46,6 +46,17 @@ typedef NS_ENUM(NSInteger, KeyBarContent) {
 /// thinks is pressed.
 - (void)keyBarDidToggleSystemKeyboard:(KeyBarView *)bar;
 
+/// A key was pressed that leaves something on the host waiting to be typed into — Spotlight,
+/// the Start menu — so the keyboard has to come back whether it was up or not.
+- (void)keyBarDidRequestSystemKeyboard:(KeyBarView *)bar;
+
+/// Asks for a program name to add as a one-tap jump.
+///
+/// The bar cannot put an alert on screen itself: while it is an inputAccessoryView its window
+/// belongs to the keyboard, not to the app, and presenting from there goes wrong in ways that
+/// are not worth discovering.
+- (void)keyBar:(KeyBarView *)bar requestsAppNameWithCompletion:(void (^)(NSString *name))completion;
+
 @end
 
 @interface KeyBarView : UIView

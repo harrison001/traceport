@@ -30,6 +30,11 @@ typedef NS_ENUM(NSInteger, KeyBarModifierState) {
 /// Time in microseconds a key is held before being released.
 static const useconds_t keyPressHoldTime = 50 * 1000;
 
+/// How long Spotlight is given to appear before it is typed into, and to rank what was typed
+/// before Return is pressed.
+static const useconds_t spotlightOpenTime = 450 * 1000;
+static const useconds_t spotlightRankTime = 600 * 1000;
+
 /// Key metrics, measured from RealVNC Viewer on the same two devices (2026-08-15).
 ///
 /// It does not use one size everywhere: 60.0 x 56.5pt on iPad, 32.3 x 33.3pt on iPhone.
@@ -852,6 +857,10 @@ typedef NS_ENUM(NSInteger, KeyBarLayout) {
 #pragma mark - Input
 
 - (void)itemPressed:(KeyBarButton *)button {
+    if (button.item.wantsKeyboard) {
+        [self.delegate keyBarDidRequestSystemKeyboard:self];
+    }
+
     switch (button.item.kind) {
         case KeyItemKindModifier:
             [self advanceModifier:button];
@@ -875,6 +884,10 @@ typedef NS_ENUM(NSInteger, KeyBarLayout) {
 
         case KeyItemKindScroll:
             LiSendScrollEvent(button.item.scrollClicks);
+            return;
+
+        case KeyItemKindAppJump:
+            [self jumpToApp:button.item.appName];
             return;
     }
 }
@@ -942,6 +955,32 @@ typedef NS_ENUM(NSInteger, KeyBarLayout) {
             // next step starts. Without the gap the host can see the two overlap.
             usleep(120 * 1000);
         }
+    });
+}
+
+/// Spotlight, the program's name, Return.
+///
+/// The waits are what make it work rather than a race. Spotlight needs a moment to appear
+/// before it will take text, and another to rank the results before Return picks the top hit —
+/// press too early and it opens whatever was still highlighted from the last search. The
+/// numbers come from TraceRecorder, shortened because that sends through a HID type queue and
+/// this sends the string in one event.
+- (void)jumpToApp:(NSString *)appName {
+    if (appName.length == 0) {
+        return;
+    }
+    NSString *name = [appName copy];
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
+        [KeyboardSupport sendChordWithVirtualKey:0x20 modifierFlags:UIKeyModifierCommand];
+        usleep(spotlightOpenTime);
+
+        const char *utf8 = name.UTF8String;
+        LiSendUtf8TextEvent(utf8, (unsigned int)strlen(utf8));
+        usleep(spotlightRankTime);
+
+        LiSendKeyboardEvent(0x0D, KEY_ACTION_DOWN, 0);
+        usleep(keyPressHoldTime);
+        LiSendKeyboardEvent(0x0D, KEY_ACTION_UP, 0);
     });
 }
 
@@ -1171,6 +1210,16 @@ typedef NS_ENUM(NSInteger, KeyBarLayout) {
 
     if (_content != KeyBarContentKeyboard) {
         [sections addObject:[self addToPadMenu]];
+        [sections addObject:[UIAction actionWithTitle:@"Add App…"
+                                                image:[UIImage systemImageNamed:@"square.grid.2x2"]
+                                           identifier:nil
+                                              handler:^(__kindof UIAction *sender) {
+            [weakSelf.delegate keyBar:weakSelf requestsAppNameWithCompletion:^(NSString *name) {
+                [KeyMacros addAppJump:name forProfile:weakSelf.profileKeyForMenu
+                                 host:weakSelf.hostKind];
+                [weakSelf reloadGroups];
+            }];
+        }]];
 
         if ([KeyMacros padIsCustomisedForProfile:_profileKey]) {
             UIAction *reset =

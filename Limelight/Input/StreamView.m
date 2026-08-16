@@ -555,6 +555,47 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     [self presentKeyBarWithSystemKeyboard:!systemKeyboardVisible];
 }
 
+- (void)keyBarDidRequestSystemKeyboard:(KeyBarView *)bar {
+    if (keyBar == nil) {
+        [self createKeyboardBar];
+    }
+    if (!systemKeyboardVisible || keyBar.superview != nil) {
+        [self presentKeyBarWithSystemKeyboard:YES];
+    }
+}
+
+- (void)keyBar:(KeyBarView *)bar requestsAppNameWithCompletion:(void (^)(NSString *))completion {
+    UIViewController *presenter = nil;
+    for (UIResponder *responder = self; responder != nil; responder = responder.nextResponder) {
+        if ([responder isKindOfClass:[UIViewController class]]) {
+            presenter = (UIViewController *)responder;
+            break;
+        }
+    }
+    if (presenter == nil) {
+        return;
+    }
+
+    UIAlertController *alert =
+        [UIAlertController alertControllerWithTitle:@"Add App"
+                                            message:@"One tap opens it: Spotlight, this name, Return."
+                                     preferredStyle:UIAlertControllerStyleAlert];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
+        field.placeholder = @"Terminal";
+        field.autocorrectionType = UITextAutocorrectionTypeNo;
+        field.autocapitalizationType = UITextAutocapitalizationTypeWords;
+    }];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel"
+                                              style:UIAlertActionStyleCancel
+                                            handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Add"
+                                              style:UIAlertActionStyleDefault
+                                            handler:^(UIAlertAction *action) {
+        completion(alert.textFields.firstObject.text ?: @"");
+    }]];
+    [presenter presentViewController:alert animated:YES completion:nil];
+}
+
 /// Closes one layer, not both.
 ///
 /// Done on the keyboard puts the keyboard away — the system keyboard with it — and leaves the
