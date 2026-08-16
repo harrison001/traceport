@@ -46,6 +46,58 @@ static const CGFloat rowHorizontalInset = 12;
 @implementation KeyBarButton
 @end
 
+/// A blurred strip with a scrolling stack of keys in it. One of these is the whole bar when it
+/// lies along an edge; two of them are the columns down either side of the picture.
+@interface KeyBarPanel : UIView
+@property (nonatomic, strong, readonly) UIScrollView *scrollView;
+@property (nonatomic, strong, readonly) UIStackView *stack;
+@end
+
+@implementation KeyBarPanel
+
+- (instancetype)initWithFrame:(CGRect)frame {
+    self = [super initWithFrame:frame];
+    if (self == nil) {
+        return nil;
+    }
+
+    // On iPad the stream fills the screen almost exactly — a 1512x982 Mac desktop into a
+    // 1133x744 iPad leaves about 4pt of letterbox — so the bar has no dead space to sit in and
+    // unavoidably covers picture. Blur rather than a solid fill, so what it covers stays
+    // legible underneath.
+    self.backgroundColor = [UIColor clearColor];
+    UIVisualEffectView *blur = [[UIVisualEffectView alloc]
+        initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemChromeMaterial]];
+    blur.translatesAutoresizingMaskIntoConstraints = NO;
+    [self addSubview:blur];
+
+    _scrollView = [[UIScrollView alloc] initWithFrame:CGRectZero];
+    _scrollView.translatesAutoresizingMaskIntoConstraints = NO;
+    _scrollView.showsHorizontalScrollIndicator = NO;
+    _scrollView.showsVerticalScrollIndicator = NO;
+    // The bar is thin; bouncing makes it feel loose.
+    _scrollView.alwaysBounceHorizontal = NO;
+    _scrollView.alwaysBounceVertical = NO;
+    [self addSubview:_scrollView];
+
+    _stack = [[UIStackView alloc] initWithFrame:CGRectZero];
+    _stack.translatesAutoresizingMaskIntoConstraints = NO;
+    _stack.spacing = keySpacing;
+    _stack.layoutMarginsRelativeArrangement = YES;
+    [_scrollView addSubview:_stack];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [blur.leadingAnchor constraintEqualToAnchor:self.leadingAnchor],
+        [blur.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
+        [blur.topAnchor constraintEqualToAnchor:self.topAnchor],
+        [blur.bottomAnchor constraintEqualToAnchor:self.bottomAnchor],
+    ]];
+
+    return self;
+}
+
+@end
+
 /// Key faces have to be lighter than the bar behind them in both appearances, the way the
 /// system keyboard does it. The semantic greys do not give that: in dark mode the "grouped
 /// background" colours collapse into the bar and the keys vanish, leaving bare labels.
@@ -66,19 +118,32 @@ static UIColor *KeyBarModifierKeyColor(void) {
     return KeyBarColor(0.74, 0.26);
 }
 
+/// Where the keys are.
+typedef NS_ENUM(NSInteger, KeyBarLayout) {
+    /// One scrolling line along an edge, controls at its far end.
+    KeyBarLayoutLine,
+    /// Two scrolling columns, one down each side, controls at the foot of the right one.
+    KeyBarLayoutSplit,
+};
+
 @implementation KeyBarView {
-    /// Scrolls: every key there is, in one row.
-    UIStackView *_row;
+    /// The bar itself when it is one line; the right-hand column when it is split. Always the
+    /// one holding the controls.
+    KeyBarPanel *_primary;
+    /// The left-hand column. Split layout only.
+    KeyBarPanel *_secondary;
     /// Does not scroll: the settings, keyboard and dismissal controls.
     UIStackView *_controls;
+
+    KeyBarLayout _layout;
+    CGFloat _marginWidth;
 
     NSArray<KeyGroup *> *_groups;
     NSString *_hostKey;
     /// Host and app together: what you pin while driving one app should not follow you to another.
     NSString *_profileKey;
-    UIScrollView *_scrollView;
     UILayoutConstraintAxis _axis;
-    NSArray<NSLayoutConstraint *> *_axisConstraints;
+    NSArray<NSLayoutConstraint *> *_layoutConstraints;
 
     /// Modifier buttons on the current page. Rebuilt with the page, but the held state that
     /// matters lives on the host, so it is re-applied rather than reset.
@@ -89,6 +154,10 @@ static UIColor *KeyBarModifierKeyColor(void) {
 
     KeyBarButton *_settingsButton;
     KeyBarButton *_keyboardToggle;
+    KeyBarButton *_doneButton;
+    /// Split layout only: the foot of the left column, which holds Done. Three controls across
+    /// one 139pt column leaves each about 40pt, and "Done" renders as an ellipsis at that width.
+    UIStackView *_secondaryControls;
 }
 
 /// iPad gets bigger keys than iPhone, as RealVNC does — there is room for them and they are
@@ -124,56 +193,26 @@ static UIColor *KeyBarModifierKeyColor(void) {
         ? [NSString stringWithFormat:@"%@/%@", hostKey ?: @"", appName]
         : [hostKey copy];
     _axis = UILayoutConstraintAxisHorizontal;
+    _layout = KeyBarLayoutLine;
     _modifierButtons = [NSMutableArray array];
     _groups = [KeyMacros groupsForHost:[KeyMacros hostKindForKey:_hostKey] profileKey:_profileKey];
 
-    // On iPad the stream fills the screen almost exactly — a 1512x982 Mac desktop into a
-    // 1133x744 iPad leaves about 4pt of letterbox — so the bar has no dead space to sit in
-    // and unavoidably covers picture. Blur rather than a solid fill, so what it covers stays
-    // legible underneath.
     self.backgroundColor = [UIColor clearColor];
-    UIVisualEffectView *blur = [[UIVisualEffectView alloc]
-        initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemChromeMaterial]];
-    blur.translatesAutoresizingMaskIntoConstraints = NO;
-    [self addSubview:blur];
-    [NSLayoutConstraint activateConstraints:@[
-        [blur.leadingAnchor constraintEqualToAnchor:self.leadingAnchor],
-        [blur.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
-        [blur.topAnchor constraintEqualToAnchor:self.topAnchor],
-        [blur.bottomAnchor constraintEqualToAnchor:self.bottomAnchor],
-    ]];
 
-    UIScrollView *scrollView = [[UIScrollView alloc] initWithFrame:CGRectZero];
-    scrollView.translatesAutoresizingMaskIntoConstraints = NO;
-    scrollView.showsHorizontalScrollIndicator = NO;
-    scrollView.showsVerticalScrollIndicator = NO;
-    // The bar is thin; bouncing makes it feel loose.
-    scrollView.alwaysBounceHorizontal = NO;
-    scrollView.alwaysBounceVertical = NO;
-    [self addSubview:scrollView];
-    _scrollView = scrollView;
+    _primary = [[KeyBarPanel alloc] initWithFrame:CGRectZero];
+    _primary.translatesAutoresizingMaskIntoConstraints = NO;
+    [self addSubview:_primary];
 
-    _row = [[UIStackView alloc] initWithFrame:CGRectZero];
-    _row.translatesAutoresizingMaskIntoConstraints = NO;
-    _row.axis = UILayoutConstraintAxisHorizontal;
-    _row.spacing = keySpacing;
-    _row.layoutMarginsRelativeArrangement = YES;
-    _row.layoutMargins = UIEdgeInsetsMake(rowVerticalInset, rowHorizontalInset,
-                                          rowVerticalInset, rowHorizontalInset);
-    [scrollView addSubview:_row];
-
-    // Controls live outside the scroll view. Dismissing the bar or changing page should never
-    // require scrolling to find the key.
+    // Controls live outside the scroll view. Dismissing the bar should never require scrolling
+    // to find the key.
     _controls = [[UIStackView alloc] initWithFrame:CGRectZero];
     _controls.translatesAutoresizingMaskIntoConstraints = NO;
     _controls.axis = UILayoutConstraintAxisHorizontal;
     _controls.spacing = keySpacing;
     _controls.layoutMarginsRelativeArrangement = YES;
-    _controls.layoutMargins = UIEdgeInsetsMake(rowVerticalInset, keySpacing,
-                                               rowVerticalInset, rowHorizontalInset);
-    [self addSubview:_controls];
+    [_primary addSubview:_controls];
 
-    [self applyAxisConstraints];
+    [self applyLayoutConstraints];
 
     [self buildControls];
     [self buildRow];
@@ -187,7 +226,13 @@ static UIColor *KeyBarModifierKeyColor(void) {
 }
 
 /// Used by UIKit when this view is an inputAccessoryView, and by Auto Layout when pinned.
+///
+/// Split layout has none: the caller pins all four edges, and the bar places its columns in
+/// the margins of whatever it is given.
 - (CGSize)intrinsicContentSize {
+    if (_layout == KeyBarLayoutSplit) {
+        return CGSizeMake(UIViewNoIntrinsicMetric, UIViewNoIntrinsicMetric);
+    }
     return _axis == UILayoutConstraintAxisHorizontal
         ? CGSizeMake(UIViewNoIntrinsicMetric, [KeyBarView barThickness])
         : CGSizeMake([KeyBarView barThickness], UIViewNoIntrinsicMetric);
@@ -197,70 +242,196 @@ static UIColor *KeyBarModifierKeyColor(void) {
     return [self keyHeight] + rowVerticalInset * 2;
 }
 
+/// Everything between the two columns belongs to the stream.
+///
+/// Without this the bar would swallow every touch on the picture, since in split layout it
+/// covers the whole view in order to reach both margins.
+- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
+    UIView *hit = [super hitTest:point withEvent:event];
+    return hit == self ? nil : hit;
+}
+
 - (void)setAxis:(UILayoutConstraintAxis)axis {
-    if (_axis == axis) {
+    if (_layout == KeyBarLayoutLine && _axis == axis) {
         return;
     }
+    _layout = KeyBarLayoutLine;
     _axis = axis;
-    _row.axis = axis;
     _controls.axis = axis;
-    [self applyAxisConstraints];
-    // The group separators are sized along the axis, so the row is rebuilt rather than rotated.
+    [self applyLayoutConstraints];
+    // The group separators are sized along the axis, so the keys are rebuilt rather than rotated.
     [self buildRow];
     [self invalidateIntrinsicContentSize];
 }
 
-/// The scroll view fills everything the controls do not, along whichever axis is in use.
-- (void)applyAxisConstraints {
-    if (_axisConstraints != nil) {
-        [NSLayoutConstraint deactivateConstraints:_axisConstraints];
+- (void)setSplitLayoutWithMarginWidth:(CGFloat)marginWidth {
+    if (_layout == KeyBarLayoutSplit && _marginWidth == marginWidth) {
+        return;
+    }
+    _layout = KeyBarLayoutSplit;
+    _marginWidth = marginWidth;
+    _axis = UILayoutConstraintAxisVertical;
+    // Along the bottom of the right column, where three stacked would eat two thirds of what
+    // the system keyboard leaves.
+    _controls.axis = UILayoutConstraintAxisHorizontal;
+    [self applyLayoutConstraints];
+    [self buildRow];
+    [self invalidateIntrinsicContentSize];
+}
+
+- (void)applyLayoutConstraints {
+    if (_layoutConstraints != nil) {
+        [NSLayoutConstraint deactivateConstraints:_layoutConstraints];
     }
 
-    UILayoutGuide *safe = self.safeAreaLayoutGuide;
-    UILayoutGuide *content = _scrollView.contentLayoutGuide;
-    UILayoutGuide *frame = _scrollView.frameLayoutGuide;
+    if (_layout == KeyBarLayoutSplit) {
+        if (_secondary == nil) {
+            _secondary = [[KeyBarPanel alloc] initWithFrame:CGRectZero];
+            _secondary.translatesAutoresizingMaskIntoConstraints = NO;
+            [self addSubview:_secondary];
 
-    if (_axis == UILayoutConstraintAxisHorizontal) {
-        _axisConstraints = @[
-            [_scrollView.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor],
-            [_scrollView.trailingAnchor constraintEqualToAnchor:_controls.leadingAnchor],
-            [_scrollView.topAnchor constraintEqualToAnchor:self.topAnchor],
-            [_scrollView.bottomAnchor constraintEqualToAnchor:self.bottomAnchor],
+            _secondaryControls = [[UIStackView alloc] initWithFrame:CGRectZero];
+            _secondaryControls.translatesAutoresizingMaskIntoConstraints = NO;
+            _secondaryControls.axis = UILayoutConstraintAxisHorizontal;
+            _secondaryControls.spacing = keySpacing;
+            _secondaryControls.layoutMarginsRelativeArrangement = YES;
+            _secondaryControls.layoutMargins = UIEdgeInsetsMake(keySpacing, rowVerticalInset,
+                                                                rowVerticalInset, rowVerticalInset);
+            [_secondary addSubview:_secondaryControls];
+        }
+        _secondary.hidden = NO;
 
-            [_controls.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor],
-            [_controls.topAnchor constraintEqualToAnchor:self.topAnchor],
-            [_controls.bottomAnchor constraintEqualToAnchor:self.bottomAnchor],
+        // The columns stop at the top of the system keyboard so the keys stay in reach while
+        // typing. keyboardLayoutGuide tracks the bottom of the view when no keyboard is up, so
+        // one constraint covers both states.
+        NSLayoutYAxisAnchor *foot = self.safeAreaLayoutGuide.bottomAnchor;
+        if (@available(iOS 15.0, *)) {
+            foot = self.keyboardLayoutGuide.topAnchor;
+        }
 
-            [_row.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],
-            [_row.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],
-            [_row.topAnchor constraintEqualToAnchor:content.topAnchor],
-            [_row.bottomAnchor constraintEqualToAnchor:content.bottomAnchor],
-            [_row.heightAnchor constraintEqualToAnchor:frame.heightAnchor],
-        ];
+        _layoutConstraints = [@[
+            [_secondary.leadingAnchor constraintEqualToAnchor:self.safeAreaLayoutGuide.leadingAnchor],
+            [_secondary.widthAnchor constraintEqualToConstant:_marginWidth],
+            [_secondary.topAnchor constraintEqualToAnchor:self.safeAreaLayoutGuide.topAnchor],
+            [_secondary.bottomAnchor constraintEqualToAnchor:foot],
+
+            [_primary.trailingAnchor constraintEqualToAnchor:self.safeAreaLayoutGuide.trailingAnchor],
+            [_primary.widthAnchor constraintEqualToConstant:_marginWidth],
+            [_primary.topAnchor constraintEqualToAnchor:self.safeAreaLayoutGuide.topAnchor],
+            [_primary.bottomAnchor constraintEqualToAnchor:foot],
+
+            [_controls.leadingAnchor constraintEqualToAnchor:_primary.leadingAnchor],
+            [_controls.trailingAnchor constraintEqualToAnchor:_primary.trailingAnchor],
+            [_controls.bottomAnchor constraintEqualToAnchor:_primary.safeAreaLayoutGuide.bottomAnchor],
+
+            [_secondaryControls.leadingAnchor constraintEqualToAnchor:_secondary.leadingAnchor],
+            [_secondaryControls.trailingAnchor constraintEqualToAnchor:_secondary.trailingAnchor],
+            [_secondaryControls.bottomAnchor constraintEqualToAnchor:_secondary.safeAreaLayoutGuide.bottomAnchor],
+        ] arrayByAddingObjectsFromArray:
+            [self constraintsForPanel:_primary above:_controls.topAnchor]];
+
+        _layoutConstraints = [_layoutConstraints arrayByAddingObjectsFromArray:
+            [self constraintsForPanel:_secondary above:_secondaryControls.topAnchor]];
+    }
+    else {
+        _secondary.hidden = YES;
+
+        BOOL horizontal = _axis == UILayoutConstraintAxisHorizontal;
+        _layoutConstraints = [@[
+            [_primary.leadingAnchor constraintEqualToAnchor:self.leadingAnchor],
+            [_primary.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
+            [_primary.topAnchor constraintEqualToAnchor:self.topAnchor],
+            [_primary.bottomAnchor constraintEqualToAnchor:self.bottomAnchor],
+        ] arrayByAddingObjectsFromArray:horizontal ? @[
+            [_controls.trailingAnchor constraintEqualToAnchor:_primary.safeAreaLayoutGuide.trailingAnchor],
+            [_controls.topAnchor constraintEqualToAnchor:_primary.topAnchor],
+            [_controls.bottomAnchor constraintEqualToAnchor:_primary.bottomAnchor],
+        ] : @[
+            [_controls.bottomAnchor constraintEqualToAnchor:_primary.safeAreaLayoutGuide.bottomAnchor],
+            [_controls.leadingAnchor constraintEqualToAnchor:_primary.leadingAnchor],
+            [_controls.trailingAnchor constraintEqualToAnchor:_primary.trailingAnchor],
+        ]];
+
+        _layoutConstraints = [_layoutConstraints arrayByAddingObjectsFromArray:
+            [self constraintsForPanel:_primary
+                                above:horizontal ? nil : _controls.topAnchor
+                               before:horizontal ? _controls.leadingAnchor : nil]];
+    }
+
+    [NSLayoutConstraint activateConstraints:_layoutConstraints];
+    [self placeDoneButton];
+
+    if (_layout == KeyBarLayoutSplit) {
+        // Two across a 139pt column: they share it rather than each demanding its own width.
+        _controls.distribution = UIStackViewDistributionFillEqually;
+        _controls.layoutMargins = UIEdgeInsetsMake(keySpacing, rowVerticalInset,
+                                                   rowVerticalInset, rowVerticalInset);
+    } else if (_axis == UILayoutConstraintAxisHorizontal) {
+        _controls.distribution = UIStackViewDistributionFill;
+        _controls.layoutMargins = UIEdgeInsetsMake(rowVerticalInset, keySpacing,
+                                                   rowVerticalInset, rowHorizontalInset);
     } else {
-        _axisConstraints = @[
-            [_scrollView.topAnchor constraintEqualToAnchor:safe.topAnchor],
-            [_scrollView.bottomAnchor constraintEqualToAnchor:_controls.topAnchor],
-            [_scrollView.leadingAnchor constraintEqualToAnchor:self.leadingAnchor],
-            [_scrollView.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
-
-            [_controls.bottomAnchor constraintEqualToAnchor:safe.bottomAnchor],
-            [_controls.leadingAnchor constraintEqualToAnchor:self.leadingAnchor],
-            [_controls.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
-
-            [_row.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],
-            [_row.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],
-            [_row.topAnchor constraintEqualToAnchor:content.topAnchor],
-            [_row.bottomAnchor constraintEqualToAnchor:content.bottomAnchor],
-            [_row.widthAnchor constraintEqualToAnchor:frame.widthAnchor],
-        ];
+        _controls.distribution = UIStackViewDistributionFill;
+        _controls.layoutMargins = UIEdgeInsetsMake(keySpacing, rowVerticalInset,
+                                                   rowHorizontalInset, rowVerticalInset);
     }
 
-    [NSLayoutConstraint activateConstraints:_axisConstraints];
+    // The keys must yield to the controls, never the other way round.
+    [_controls setContentHuggingPriority:UILayoutPriorityRequired forAxis:_controls.axis];
+    [_controls setContentCompressionResistancePriority:UILayoutPriorityRequired
+                                               forAxis:_controls.axis];
+}
 
-    // The page must yield to the controls, never the other way round.
-    [_controls setContentHuggingPriority:UILayoutPriorityRequired forAxis:_axis];
-    [_controls setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:_axis];
+- (NSArray<NSLayoutConstraint *> *)constraintsForPanel:(KeyBarPanel *)panel
+                                                 above:(nullable NSLayoutYAxisAnchor *)foot {
+    return [self constraintsForPanel:panel above:foot before:nil];
+}
+
+/// Places a panel's scroll view and its stack, stopping short of the controls where there are
+/// any. The stack is pinned to the content guide on all four sides and matched to the frame
+/// guide across the scrolling axis, which is what makes the scroll view size itself to the
+/// keys rather than needing a contentSize set by hand.
+- (NSArray<NSLayoutConstraint *> *)constraintsForPanel:(KeyBarPanel *)panel
+                                                 above:(nullable NSLayoutYAxisAnchor *)foot
+                                                before:(nullable NSLayoutXAxisAnchor *)edge {
+    UIScrollView *scroll = panel.scrollView;
+    UIStackView *stack = panel.stack;
+    UILayoutGuide *content = scroll.contentLayoutGuide;
+    UILayoutGuide *frame = scroll.frameLayoutGuide;
+    UILayoutGuide *safe = panel.safeAreaLayoutGuide;
+    BOOL vertical = _axis == UILayoutConstraintAxisVertical;
+
+    stack.axis = _axis;
+    stack.layoutMargins = vertical
+        ? UIEdgeInsetsMake(rowHorizontalInset, rowVerticalInset, rowHorizontalInset, rowVerticalInset)
+        : UIEdgeInsetsMake(rowVerticalInset, rowHorizontalInset, rowVerticalInset, rowHorizontalInset);
+
+    NSMutableArray<NSLayoutConstraint *> *constraints = [NSMutableArray arrayWithArray:@[
+        [stack.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],
+        [stack.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],
+        [stack.topAnchor constraintEqualToAnchor:content.topAnchor],
+        [stack.bottomAnchor constraintEqualToAnchor:content.bottomAnchor],
+        vertical ? [stack.widthAnchor constraintEqualToAnchor:frame.widthAnchor]
+                 : [stack.heightAnchor constraintEqualToAnchor:frame.heightAnchor],
+    ]];
+
+    if (vertical) {
+        [constraints addObjectsFromArray:@[
+            [scroll.leadingAnchor constraintEqualToAnchor:panel.leadingAnchor],
+            [scroll.trailingAnchor constraintEqualToAnchor:panel.trailingAnchor],
+            [scroll.topAnchor constraintEqualToAnchor:safe.topAnchor],
+            [scroll.bottomAnchor constraintEqualToAnchor:foot ?: safe.bottomAnchor],
+        ]];
+    } else {
+        [constraints addObjectsFromArray:@[
+            [scroll.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor],
+            [scroll.trailingAnchor constraintEqualToAnchor:edge ?: safe.trailingAnchor],
+            [scroll.topAnchor constraintEqualToAnchor:panel.topAnchor],
+            [scroll.bottomAnchor constraintEqualToAnchor:panel.bottomAnchor],
+        ]];
+    }
+
+    return constraints;
 }
 
 #pragma mark - The row
@@ -272,24 +443,130 @@ static UIColor *KeyBarModifierKeyColor(void) {
 /// that shows you the answer on the way. Modifiers are a state machine, not a held finger, so
 /// arming one and then scrolling to the key it modifies works.
 - (void)buildRow {
-    for (UIView *view in _row.arrangedSubviews) {
+    for (UIView *view in _primary.stack.arrangedSubviews) {
+        [view removeFromSuperview];
+    }
+    for (UIView *view in _secondary.stack.arrangedSubviews) {
         [view removeFromSuperview];
     }
     [_modifierButtons removeAllObjects];
 
+    // Split layout fills the left column first, so the front of the list — the modifiers and
+    // everything used constantly — sits under the left thumb without scrolling, and the long
+    // tail goes to the right.
+    NSUInteger cut = _layout == KeyBarLayoutSplit ? [self secondColumnIndex] : _groups.count;
+
+    KeyBarPanel *panel = _layout == KeyBarLayoutSplit ? _secondary : _primary;
     BOOL first = YES;
-    for (KeyGroup *group in _groups) {
+    for (NSUInteger i = 0; i < _groups.count; i++) {
+        if (i == cut) {
+            panel = _primary;
+            first = YES;
+        }
         if (!first) {
-            [self addGroupSeparator];
+            [self addGroupSeparatorTo:panel];
         }
         first = NO;
 
-        for (KeyItem *item in group.items) {
-            [self addItem:item];
+        if (_layout == KeyBarLayoutSplit) {
+            for (NSArray<KeyItem *> *row in [self packItems:_groups[i].items]) {
+                [self addRow:row to:panel];
+            }
+        } else {
+            for (KeyItem *item in _groups[i].items) {
+                [self addItem:item to:panel];
+            }
         }
     }
 
     [self restoreModifierAppearance];
+}
+
+/// Packs a group into rows two keys wide, giving a row of its own to anything whose label will
+/// not fit in half a column.
+///
+/// Density is the whole point of the columns: at one key per row only four are in reach above
+/// the system keyboard, and half the keys — the modifiers, the arrows, the tmux commands — are
+/// labelled with two or three characters and waste most of a 139pt row. Long macro names like
+/// "Mission Control" still take the full width, so nothing is truncated to fit.
+- (NSArray<NSArray<KeyItem *> *> *)packItems:(NSArray<KeyItem *> *)items {
+    CGFloat inner = _marginWidth - rowVerticalInset * 2;
+    CGFloat half = (inner - keySpacing) / 2;
+    UIFont *font = [UIFont systemFontOfSize:[KeyBarView isPad] ? 19 : 16 weight:UIFontWeightMedium];
+
+    BOOL (^fitsHalf)(KeyItem *) = ^BOOL(KeyItem *item) {
+        // A little under buttonWithTitle:'s 8pt inset each side: the label may shrink to 80%
+        // before it truncates, so a label that misses by a point still reads perfectly. Being
+        // strict here costs a whole row — "Zoom" overhangs by one point, and paying a row for
+        // it also pushes the four pane arrows out of their natural pairs.
+        CGSize size = [item.label sizeWithAttributes:@{NSFontAttributeName: font}];
+        return ceil(size.width) + 12 <= half;
+    };
+
+    NSMutableArray<NSArray<KeyItem *> *> *rows = [NSMutableArray array];
+    NSMutableArray<KeyItem *> *pending = [NSMutableArray array];
+
+    for (KeyItem *item in items) {
+        if (!fitsHalf(item)) {
+            if (pending.count > 0) {
+                [rows addObject:[pending copy]];
+                [pending removeAllObjects];
+            }
+            [rows addObject:@[item]];
+            continue;
+        }
+        [pending addObject:item];
+        if (pending.count == 2) {
+            [rows addObject:[pending copy]];
+            [pending removeAllObjects];
+        }
+    }
+    if (pending.count > 0) {
+        [rows addObject:[pending copy]];
+    }
+
+    return rows;
+}
+
+- (void)addRow:(NSArray<KeyItem *> *)items to:(KeyBarPanel *)panel {
+    if (items.count == 1) {
+        [self addItem:items.firstObject to:panel];
+        return;
+    }
+
+    UIStackView *row = [[UIStackView alloc] initWithFrame:CGRectZero];
+    row.translatesAutoresizingMaskIntoConstraints = NO;
+    row.axis = UILayoutConstraintAxisHorizontal;
+    row.spacing = keySpacing;
+    row.distribution = UIStackViewDistributionFillEqually;
+    for (KeyItem *item in items) {
+        [row addArrangedSubview:[self buttonForItem:item]];
+    }
+    [panel.stack addArrangedSubview:row];
+}
+
+/// Where the right-hand column starts: the group that says so, or failing that the boundary
+/// nearest the middle by key count.
+- (NSUInteger)secondColumnIndex {
+    for (NSUInteger i = 0; i < _groups.count; i++) {
+        if (_groups[i].startsSecondColumn) {
+            return i;
+        }
+    }
+
+    NSUInteger total = 0;
+    for (KeyGroup *group in _groups) {
+        total += group.items.count;
+    }
+
+    NSUInteger running = 0;
+    for (NSUInteger i = 0; i < _groups.count; i++) {
+        if (running * 2 >= total) {
+            return i;
+        }
+        running += _groups[i].items.count;
+    }
+    return _groups.count;
 }
 
 /// A rebuild replaces the buttons, but the host still has whatever was held down. Put the new
@@ -322,9 +599,20 @@ static UIColor *KeyBarModifierKeyColor(void) {
     [_keyboardToggle addTarget:self action:@selector(keyboardTogglePressed) forControlEvents:UIControlEventTouchUpInside];
     [_controls addArrangedSubview:_keyboardToggle];
 
-    KeyBarButton *done = [self buttonWithTitle:@"Done" wide:YES];
-    [done addTarget:self action:@selector(donePressed) forControlEvents:UIControlEventTouchUpInside];
-    [_controls addArrangedSubview:done];
+    _doneButton = [self buttonWithTitle:@"Done" wide:YES];
+    [_doneButton addTarget:self action:@selector(donePressed) forControlEvents:UIControlEventTouchUpInside];
+    [self placeDoneButton];
+}
+
+/// Done sits with the other controls when the bar is one line, and alone at the foot of the
+/// left column when it is split, where it gets the whole width instead of a third of it.
+- (void)placeDoneButton {
+    [_doneButton removeFromSuperview];
+    if (_layout == KeyBarLayoutSplit) {
+        [_secondaryControls addArrangedSubview:_doneButton];
+    } else {
+        [_controls addArrangedSubview:_doneButton];
+    }
 }
 
 - (KeyBarButton *)buttonWithTitle:(NSString *)title wide:(BOOL)wide {
@@ -340,13 +628,22 @@ static UIColor *KeyBarModifierKeyColor(void) {
     button.tintColor = [UIColor labelColor];
 
     [button.heightAnchor constraintEqualToConstant:[KeyBarView keyHeight]].active = YES;
+
+    // High rather than required: three controls at their natural widths do not fit across a
+    // 139pt column, and shrinking them is better than breaking the layout.
     CGFloat width = [KeyBarView keyWidth] * (wide ? 1.3 : 1.0);
-    [button.widthAnchor constraintGreaterThanOrEqualToConstant:width].active = YES;
+    NSLayoutConstraint *minimum = [button.widthAnchor constraintGreaterThanOrEqualToConstant:width];
+    minimum.priority = UILayoutPriorityDefaultHigh;
+    minimum.active = YES;
 
     return button;
 }
 
-- (void)addItem:(KeyItem *)item {
+- (void)addItem:(KeyItem *)item to:(KeyBarPanel *)panel {
+    [panel.stack addArrangedSubview:[self buttonForItem:item]];
+}
+
+- (KeyBarButton *)buttonForItem:(KeyItem *)item {
     KeyBarButton *button = [self buttonWithTitle:item.label wide:item.label.length > 3];
     button.item = item;
     button.modifierState = KeyBarModifierStateOff;
@@ -363,12 +660,12 @@ static UIColor *KeyBarModifierKeyColor(void) {
     }
 
     [self applyAppearance:button];
-    [_row addArrangedSubview:button];
+    return button;
 }
 
 /// A wide gap between groups. Implemented as an empty view because UIStackView applies its
 /// spacing uniformly and cannot vary it per gap.
-- (void)addGroupSeparator {
+- (void)addGroupSeparatorTo:(KeyBarPanel *)panel {
     UIView *spacer = [[UIView alloc] initWithFrame:CGRectZero];
     spacer.translatesAutoresizingMaskIntoConstraints = NO;
     CGFloat gap = [KeyBarView groupSpacing] - keySpacing * 2;
@@ -377,7 +674,7 @@ static UIColor *KeyBarModifierKeyColor(void) {
     } else {
         [spacer.heightAnchor constraintEqualToConstant:gap].active = YES;
     }
-    [_row addArrangedSubview:spacer];
+    [panel.stack addArrangedSubview:spacer];
 }
 
 - (void)applyAppearance:(KeyBarButton *)button {

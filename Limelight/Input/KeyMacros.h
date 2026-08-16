@@ -70,6 +70,14 @@ typedef NS_ENUM(NSInteger, KeyItemKind) {
 /// Items that belong together, drawn with a wide gap on either side.
 @interface KeyGroup : NSObject
 @property (nonatomic, copy, readonly) NSArray<KeyItem *> *items;
+
+/// Marks where the right-hand column starts when the bar is laid out as two columns.
+///
+/// Splitting by key count puts the break in the wrong place: it lands in the middle of the
+/// list by arithmetic, which has nothing to do with which keys are worth having in reach. The
+/// break is a decision about what each thumb gets, so it is stated here rather than computed.
+@property (nonatomic, assign) BOOL startsSecondColumn;
+
 + (instancetype)groupWithItems:(NSArray<KeyItem *> *)items;
 @end
 

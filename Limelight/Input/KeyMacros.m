@@ -137,14 +137,20 @@
     static NSArray<KeyGroup *> *groups;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
+        // The left thumb gets a plain keyboard — modifiers, esc/tab/return/delete, arrows —
+        // and the right thumb gets tmux, which is what this is driven with every day. Both
+        // fit above the system keyboard without scrolling.
+        NSArray<KeyGroup *> *tmux = [self tmuxGroups];
+        tmux.firstObject.startsSecondColumn = YES;
+
         groups = [@[
             [self modifiersForHost:KeyMacroHostMacOS],
             [self editingKeys],
             [self arrows],
-            [self clipboardForHost:KeyMacroHostMacOS],
-        ] arrayByAddingObjectsFromArray:[self tmuxGroups]];
+        ] arrayByAddingObjectsFromArray:tmux];
 
         groups = [groups arrayByAddingObjectsFromArray:@[
+            [self clipboardForHost:KeyMacroHostMacOS],
             [KeyGroup groupWithItems:@[
                 [KeyItem macro:@"Switch App" code:0x09 flags:UIKeyModifierCommand],
                 [KeyItem macro:@"Windows" code:0xC0 flags:UIKeyModifierCommand],
@@ -228,11 +234,15 @@
     static NSArray<KeyGroup *> *groups;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
+        // No tmux here, so the break falls where the plain keys end.
+        KeyGroup *clipboard = [self clipboardForHost:KeyMacroHostWindows];
+        clipboard.startsSecondColumn = YES;
+
         groups = @[
             [self modifiersForHost:KeyMacroHostWindows],
             [self editingKeys],
             [self arrows],
-            [self clipboardForHost:KeyMacroHostWindows],
+            clipboard,
             [KeyGroup groupWithItems:@[
                 [KeyItem macro:@"Switch App" code:0x09 flags:UIKeyModifierAlternate],
                 [KeyItem macro:@"Close" code:0x73 flags:UIKeyModifierAlternate],
@@ -385,7 +395,10 @@ static NSString *KeyProfileDefaultsKey(NSString *profileKey, NSString *field) {
             }
         }
         if (items.count > 0) {
-            [groups addObject:[KeyGroup groupWithItems:items]];
+            KeyGroup *rebuilt = [KeyGroup groupWithItems:items];
+            // Carried over, or hiding one key would move the column break.
+            rebuilt.startsSecondColumn = group.startsSecondColumn;
+            [groups addObject:rebuilt];
         }
     }
 

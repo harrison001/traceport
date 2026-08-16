@@ -423,9 +423,9 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
 /// The bar is the same object either way, so held modifiers survive the switch: this changes
 /// what is on screen, not what the host believes is pressed.
 - (void)presentKeyBarWithSystemKeyboard:(BOOL)withSystemKeyboard {
-    if (withSystemKeyboard) {
-        // As an inputAccessoryView, UIKit owns the frame and the bar must lie along the top
-        // of the system keyboard.
+    if (withSystemKeyboard && [self keyBarMarginWidth] <= 0) {
+        // Nowhere free to put it: as an inputAccessoryView, UIKit owns the frame and the bar
+        // must lie along the top of the system keyboard.
         [keyBar removeFromSuperview];
         [keyBar setAxis:UILayoutConstraintAxisHorizontal];
         keyBar.translatesAutoresizingMaskIntoConstraints = YES;
@@ -434,46 +434,63 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
         [keyInputField reloadInputViews];
         [keyInputField becomeFirstResponder];
     } else {
-        [keyInputField resignFirstResponder];
+        // The bar lives in the letterbox, which the system keyboard does not reach, so it can
+        // stay exactly where it is while the keyboard comes and goes.
         keyInputField.inputAccessoryView = nil;
         [self pinKeyBar];
+        if (withSystemKeyboard) {
+            [keyInputField becomeFirstResponder];
+        } else {
+            [keyInputField resignFirstResponder];
+        }
     }
 
     systemKeyboardVisible = withSystemKeyboard;
     [keyBar setSystemKeyboardVisible:withSystemKeyboard];
 }
 
-/// Pins the key bar to an edge, choosing the one that costs the least picture.
+/// How much black there is down each side of the picture, or zero if there is not enough to
+/// hold a column of keys.
+///
+/// The letterbox is the difference between the shape of the stream and the shape of the
+/// screen. A 1512x982 Mac desktop on an iPhone in landscape leaves 139pt each side; the same
+/// desktop on an iPad leaves about 4pt, and there the bar has to cover picture instead.
+- (CGFloat)keyBarMarginWidth {
+    UIView *host = [self keyBarHostView];
+    CGFloat margin = (host.bounds.size.width - [self getVideoAreaSize].width) / 2;
+    return margin >= [KeyBarView barThickness] ? margin : 0;
+}
+
+/// Puts the key bar where it costs the least picture.
 ///
 /// The streamed desktop is letterboxed to preserve its aspect, and where the black lands
-/// depends on the two shapes. A 1512x982 Mac on an iPhone in landscape fits 782 points wide
+/// depends on the two shapes. A 1512x982 Mac on an iPhone in landscape fits 677 points wide
 /// inside 956, leaving 139 points of pure black down each side — a quarter of the screen,
-/// holding nothing, and exactly where the thumbs rest. The bar goes there. On iPad the same
-/// desktop fills the screen to within a few points, so there is no free edge and the bar sits
-/// along the bottom, blurred, over picture.
+/// holding nothing, and exactly where the thumbs rest. Both strips become columns of keys. On
+/// iPad the same desktop fills the screen to within a few points, so there is no free edge and
+/// the bar sits along the bottom, blurred, over picture.
 - (void)pinKeyBar {
     UIView *host = [self keyBarHostView];
     if (keyBar.superview == host) {
         return;
     }
 
-    CGSize video = [self getVideoAreaSize];
-    CGFloat sideMargin = (host.bounds.size.width - video.width) / 2;
-    CGFloat bottomMargin = (host.bounds.size.height - video.height) / 2;
-    BOOL sideIsFree = sideMargin >= [KeyBarView barThickness] && sideMargin > bottomMargin;
-
-    [keyBar setAxis:sideIsFree ? UILayoutConstraintAxisVertical : UILayoutConstraintAxisHorizontal];
-
+    CGFloat margin = [self keyBarMarginWidth];
     keyBar.translatesAutoresizingMaskIntoConstraints = NO;
     [host addSubview:keyBar];
 
-    if (sideIsFree) {
+    if (margin > 0) {
+        // Spans everything, and passes the middle through to the stream: the two columns have
+        // to reach both edges, and there is no one rectangle that is only the two margins.
+        [keyBar setSplitLayoutWithMarginWidth:margin];
         [NSLayoutConstraint activateConstraints:@[
+            [keyBar.leadingAnchor constraintEqualToAnchor:host.leadingAnchor],
             [keyBar.trailingAnchor constraintEqualToAnchor:host.trailingAnchor],
             [keyBar.topAnchor constraintEqualToAnchor:host.topAnchor],
             [keyBar.bottomAnchor constraintEqualToAnchor:host.bottomAnchor],
         ]];
     } else {
+        [keyBar setAxis:UILayoutConstraintAxisHorizontal];
         [NSLayoutConstraint activateConstraints:@[
             [keyBar.leadingAnchor constraintEqualToAnchor:host.leadingAnchor],
             [keyBar.trailingAnchor constraintEqualToAnchor:host.trailingAnchor],

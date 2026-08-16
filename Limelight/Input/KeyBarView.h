@@ -35,12 +35,23 @@ NS_ASSUME_NONNULL_BEGIN
                       hostKey:(nullable NSString *)hostKey
                       appName:(nullable NSString *)appName;
 
-/// Lays the bar out along an axis.
-///
-/// Vertical is for the phone in landscape, where the streamed desktop is letterboxed into the
-/// middle and leaves a strip of black down each side wide enough to hold the bar without
-/// covering any picture at all — which is also where the thumbs are.
+/// Lays the bar out as one line along an axis.
 - (void)setAxis:(UILayoutConstraintAxis)axis;
+
+/// Lays the keys out as two scrolling columns, one down each side, with nothing in between.
+///
+/// A 1512x982 Mac desktop on an iPhone in landscape fits 677 points wide inside 956, leaving
+/// 139 points of pure black down each side — a quarter of the screen holding nothing, and
+/// exactly where the thumbs rest. Two columns there beat one line along an edge on every
+/// count: twice the keys visible, no scrolling for the common ones, and the picture keeps
+/// every pixel it had. The middle passes touches through to the stream.
+///
+/// The columns stop above the system keyboard rather than disappearing under it, so the keys
+/// stay in reach while typing — which one line as an inputAccessoryView could never do.
+///
+/// @param marginWidth How wide the letterbox strip is. The caller measures it; the bar itself
+///                    does not know what shape the stream is.
+- (void)setSplitLayoutWithMarginWidth:(CGFloat)marginWidth;
 
 /// How thick the bar is across its axis.
 + (CGFloat)barThickness;
