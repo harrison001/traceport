@@ -184,6 +184,8 @@ typedef NS_ENUM(NSInteger, KeyBarLayout) {
 
     KeyBarLayout _layout;
     KeyBarContent _content;
+    /// How many of _groups came from the keyboard rather than the pad.
+    NSUInteger _keyboardGroupCount;
     CGFloat _marginWidth;
 
     NSArray<KeyGroup *> *_groups;
@@ -319,6 +321,16 @@ typedef NS_ENUM(NSInteger, KeyBarLayout) {
     [self invalidateIntrinsicContentSize];
 }
 
+- (void)setBottomInset:(CGFloat)bottomInset {
+    if (_bottomInset == bottomInset) {
+        return;
+    }
+    _bottomInset = bottomInset;
+    if (_layout == KeyBarLayoutSplit) {
+        [self applyLayoutConstraints];
+    }
+}
+
 - (void)setSplitLayoutWithMarginWidth:(CGFloat)marginWidth {
     if (_layout == KeyBarLayoutSplit && _marginWidth == marginWidth) {
         return;
@@ -364,6 +376,9 @@ typedef NS_ENUM(NSInteger, KeyBarLayout) {
         if (@available(iOS 15.0, *)) {
             foot = self.keyboardLayoutGuide.topAnchor;
         }
+        // With the system keyboard down, the keyboard line pins itself along the bottom and the
+        // guide is no longer what keeps the columns clear of it.
+        CGFloat footInset = _bottomInset;
 
         // Flush with the screen edge, and exactly as wide as the letterbox. Not the safe area:
         // in landscape iOS reports a 59pt inset down both sides, and subtracting it from an
@@ -373,12 +388,12 @@ typedef NS_ENUM(NSInteger, KeyBarLayout) {
             [_secondary.leadingAnchor constraintEqualToAnchor:self.leadingAnchor],
             [_secondary.widthAnchor constraintEqualToConstant:_marginWidth],
             [_secondary.topAnchor constraintEqualToAnchor:self.safeAreaLayoutGuide.topAnchor],
-            [_secondary.bottomAnchor constraintEqualToAnchor:foot],
+            [_secondary.bottomAnchor constraintEqualToAnchor:foot constant:-footInset],
 
             [_primary.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
             [_primary.widthAnchor constraintEqualToConstant:_marginWidth],
             [_primary.topAnchor constraintEqualToAnchor:self.safeAreaLayoutGuide.topAnchor],
-            [_primary.bottomAnchor constraintEqualToAnchor:foot],
+            [_primary.bottomAnchor constraintEqualToAnchor:foot constant:-footInset],
 
             [_controls.leadingAnchor constraintEqualToAnchor:_primary.leadingAnchor],
             [_controls.trailingAnchor constraintEqualToAnchor:_primary.trailingAnchor],
@@ -534,13 +549,17 @@ typedef NS_ENUM(NSInteger, KeyBarLayout) {
         }
         first = NO;
 
+        // Which surface an item belongs to decides what its long-press menu offers. Only a
+        // bar carrying both has to tell them apart, and there the keyboard comes first.
+        BOOL onPad = _content == KeyBarContentPad || i >= _keyboardGroupCount;
+
         if (_layout == KeyBarLayoutSplit) {
             for (NSArray<KeyItem *> *row in [self packItems:_groups[i].items]) {
-                [self addRow:row to:panel];
+                [self addRow:row to:panel onPad:onPad];
             }
         } else {
             for (KeyItem *item in _groups[i].items) {
-                [self addItem:item to:panel];
+                [self addItem:item to:panel onPad:onPad];
             }
         }
     }
@@ -594,9 +613,9 @@ typedef NS_ENUM(NSInteger, KeyBarLayout) {
     return rows;
 }
 
-- (void)addRow:(NSArray<KeyItem *> *)items to:(KeyBarPanel *)panel {
+- (void)addRow:(NSArray<KeyItem *> *)items to:(KeyBarPanel *)panel onPad:(BOOL)onPad {
     if (items.count == 1) {
-        [self addItem:items.firstObject to:panel];
+        [self addItem:items.firstObject to:panel onPad:onPad];
         return;
     }
 
@@ -606,7 +625,7 @@ typedef NS_ENUM(NSInteger, KeyBarLayout) {
     row.spacing = keySpacing;
     row.distribution = UIStackViewDistributionFillEqually;
     for (KeyItem *item in items) {
-        [row addArrangedSubview:[self buttonForItem:item]];
+        [row addArrangedSubview:[self buttonForItem:item onPad:onPad]];
     }
     [panel.stack addArrangedSubview:row];
 }
@@ -745,11 +764,11 @@ typedef NS_ENUM(NSInteger, KeyBarLayout) {
     return button;
 }
 
-- (void)addItem:(KeyItem *)item to:(KeyBarPanel *)panel {
-    [panel.stack addArrangedSubview:[self buttonForItem:item]];
+- (void)addItem:(KeyItem *)item to:(KeyBarPanel *)panel onPad:(BOOL)onPad {
+    [panel.stack addArrangedSubview:[self buttonForItem:item onPad:onPad]];
 }
 
-- (KeyBarButton *)buttonForItem:(KeyItem *)item {
+- (KeyBarButton *)buttonForItem:(KeyItem *)item onPad:(BOOL)onPad {
     KeyBarButton *button = [self buttonWithTitle:item.label wide:item.label.length > 3];
     button.item = item;
     button.modifierState = KeyBarModifierStateOff;
@@ -757,12 +776,12 @@ typedef NS_ENUM(NSInteger, KeyBarLayout) {
 
     if (item.kind == KeyItemKindModifier) {
         [_modifierButtons addObject:button];
-    } else if (item.detail != nil) {
-        // Long press to make the pad your own. Termius and Stream Deck both let the user decide
-        // what is on the surface; Jump Desktop's fixed list is the thing that cannot fit anyone
+    } else {
+        // Long press to make the surface your own. Termius and Stream Deck both let the user
+        // decide what is on it; Jump Desktop's fixed list is the thing that cannot fit anyone
         // whose habits differ from its author's.
         button.showsMenuAsPrimaryAction = NO;
-        button.menu = [self padMenuForItem:item];
+        button.menu = [self menuForItem:item onPad:onPad];
     }
 
     [self applyAppearance:button];
@@ -969,31 +988,55 @@ typedef NS_ENUM(NSInteger, KeyBarLayout) {
 
 #pragma mark - Controls
 
-/// Long-press menu on a pad key: take it off, or move it nearer the thumb.
+/// Long-press menu on a key.
 ///
-/// Only macros carry a description, and only macros can be on the pad, so that is what decides
-/// whether a key is editable — the keyboard's own keys are not up for negotiation.
-- (UIMenu *)padMenuForItem:(KeyItem *)item {
+/// A key on the pad can be moved nearer the thumb or taken off. A key on the keyboard can be
+/// copied onto the pad — which is what the old "Add to Mine" did, and the reason anyone
+/// long-presses one — or hidden, since nobody uses all twelve function keys.
+- (UIMenu *)menuForItem:(KeyItem *)item onPad:(BOOL)onPad {
     __weak KeyBarView *weakSelf = self;
     NSMutableArray<UIMenuElement *> *actions = [NSMutableArray array];
 
-    [actions addObject:[UIAction actionWithTitle:@"Move Nearer"
-                                           image:[UIImage systemImageNamed:@"arrow.up"]
-                                      identifier:nil
-                                         handler:^(__kindof UIAction *sender) {
-        [KeyMacros promoteOnPad:item forProfile:weakSelf.profileKeyForMenu host:weakSelf.hostKind];
-        [weakSelf reloadGroups];
-    }]];
+    if (onPad) {
+        [actions addObject:[UIAction actionWithTitle:@"Move Nearer"
+                                               image:[UIImage systemImageNamed:@"arrow.up"]
+                                          identifier:nil
+                                             handler:^(__kindof UIAction *sender) {
+            [KeyMacros promoteOnPad:item forProfile:weakSelf.profileKeyForMenu
+                               host:weakSelf.hostKind];
+            [weakSelf reloadGroups];
+        }]];
 
-    UIAction *remove = [UIAction actionWithTitle:@"Remove"
-                                           image:[UIImage systemImageNamed:@"minus.circle"]
-                                      identifier:nil
-                                         handler:^(__kindof UIAction *sender) {
-        [KeyMacros removeFromPad:item forProfile:weakSelf.profileKeyForMenu host:weakSelf.hostKind];
-        [weakSelf reloadGroups];
-    }];
-    remove.attributes = UIMenuElementAttributesDestructive;
-    [actions addObject:remove];
+        UIAction *remove = [UIAction actionWithTitle:@"Remove"
+                                               image:[UIImage systemImageNamed:@"minus.circle"]
+                                          identifier:nil
+                                             handler:^(__kindof UIAction *sender) {
+            [KeyMacros removeFromPad:item forProfile:weakSelf.profileKeyForMenu
+                                host:weakSelf.hostKind];
+            [weakSelf reloadGroups];
+        }];
+        remove.attributes = UIMenuElementAttributesDestructive;
+        [actions addObject:remove];
+    } else {
+        [actions addObject:[UIAction actionWithTitle:@"Add to Pad"
+                                               image:[UIImage systemImageNamed:@"pin"]
+                                          identifier:nil
+                                             handler:^(__kindof UIAction *sender) {
+            [KeyMacros addToPad:item forProfile:weakSelf.profileKeyForMenu host:weakSelf.hostKind];
+            [weakSelf.padDelegate keyBarPadDidChange];
+            [weakSelf reloadGroups];
+        }]];
+
+        UIAction *hide = [UIAction actionWithTitle:@"Hide"
+                                             image:[UIImage systemImageNamed:@"eye.slash"]
+                                        identifier:nil
+                                           handler:^(__kindof UIAction *sender) {
+            [KeyMacros hideKeyboardKey:item forProfile:weakSelf.profileKeyForMenu];
+            [weakSelf reloadGroups];
+        }];
+        hide.attributes = UIMenuElementAttributesDestructive;
+        [actions addObject:hide];
+    }
 
     return [UIMenu menuWithTitle:item.detail ?: item.label children:actions];
 }
@@ -1057,8 +1100,9 @@ typedef NS_ENUM(NSInteger, KeyBarLayout) {
 
     NSMutableArray<KeyGroup *> *groups = [NSMutableArray array];
     if (_content != KeyBarContentPad) {
-        [groups addObjectsFromArray:[KeyMacros keyboardGroupsForHost:host]];
+        [groups addObjectsFromArray:[KeyMacros keyboardGroupsForHost:host profileKey:_profileKey]];
     }
+    _keyboardGroupCount = groups.count;
     if (_content != KeyBarContentKeyboard) {
         NSArray<KeyItem *> *pad = [KeyMacros padItemsForHost:host profileKey:_profileKey];
         if (_content == KeyBarContentPad && pad.count > 1) {
@@ -1074,6 +1118,10 @@ typedef NS_ENUM(NSInteger, KeyBarLayout) {
         }
     }
     return groups;
+}
+
+- (void)reloadPad {
+    [self reloadGroups];
 }
 
 - (void)reloadGroups {
@@ -1131,6 +1179,19 @@ typedef NS_ENUM(NSInteger, KeyBarLayout) {
             reset.attributes = UIMenuElementAttributesDestructive;
             [sections addObject:reset];
         }
+    }
+
+    if (_content != KeyBarContentPad && [KeyMacros keyboardIsCustomisedForProfile:_profileKey]) {
+        UIAction *reset =
+            [UIAction actionWithTitle:@"Reset Keyboard"
+                                image:[UIImage systemImageNamed:@"arrow.uturn.backward"]
+                           identifier:nil
+                              handler:^(__kindof UIAction *sender) {
+            [KeyMacros resetKeyboardForProfile:weakSelf.profileKeyForMenu];
+            [weakSelf reloadGroups];
+        }];
+        reset.attributes = UIMenuElementAttributesDestructive;
+        [sections addObject:reset];
     }
 
     [sections addObject:[self hostKindMenu]];

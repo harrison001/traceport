@@ -26,6 +26,10 @@ typedef NS_ENUM(NSInteger, KeyBarContent) {
     KeyBarContentBoth,
 };
 
+@protocol KeyBarPadObserver <NSObject>
+- (void)keyBarPadDidChange;
+@end
+
 @protocol KeyBarViewDelegate <NSObject>
 
 /// The dismiss key was pressed.
@@ -42,6 +46,14 @@ typedef NS_ENUM(NSInteger, KeyBarContent) {
 @interface KeyBarView : UIView
 
 @property (nonatomic, weak) id<KeyBarViewDelegate> delegate;
+
+/// Told when this bar changes the pad's contents, so the pad — a different instance — knows to
+/// rebuild. Adding a key from the keyboard is the only thing that does it.
+@property (nonatomic, weak) id<KeyBarPadObserver> padDelegate;
+
+/// How much room to leave at the foot of the columns, for whatever is pinned along the bottom.
+/// Split layout only.
+@property (nonatomic, assign) CGFloat bottomInset;
 
 /// Whether this bar carries the ⋯, ⌨ and Done controls. Exactly one surface should: with a pad
 /// on screen the controls belong there, because the pad is the one that is always visible.
@@ -73,6 +85,9 @@ typedef NS_ENUM(NSInteger, KeyBarContent) {
 
 /// How thick the bar is across its axis.
 + (CGFloat)barThickness;
+
+/// Rebuilds from the stored pad list. For when another bar changed it.
+- (void)reloadPad;
 
 /// Releases every modifier the bar is holding down, on the host and visually.
 ///

@@ -18,7 +18,7 @@
 #if !TARGET_OS_TV
 #import "KeyBarView.h"
 
-@interface StreamView () <KeyBarViewDelegate>
+@interface StreamView () <KeyBarViewDelegate, KeyBarPadObserver>
 @end
 #endif
 
@@ -434,6 +434,7 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
                                        content:hasMargin ? KeyBarContentKeyboard
                                                          : KeyBarContentBoth];
     keyBar.delegate = self;
+    keyBar.padDelegate = self;
 
     if (hasMargin) {
         macroPad = [[KeyBarView alloc] initWithFrame:self.bounds
@@ -475,18 +476,21 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
         keyInputField.inputAccessoryView = keyBar;
         [keyInputField reloadInputViews];
         [keyInputField becomeFirstResponder];
+        // The keyboard's own guide takes over keeping the columns clear.
+        macroPad.bottomInset = 0;
     } else {
-        // The line completes the system keyboard, so with no keyboard there is nothing for it
-        // to complete: it goes away and the pad, which is not attached to it, stays. Where
-        // there is no pad it has to stay too, pinned along the bottom.
-        [keyBar releaseHeldModifiers];
-        keyInputField.inputAccessoryView = nil;
+        // The line stays; it just moves out of the keyboard's window and pins itself along the
+        // bottom. Held modifiers survive the move, which is the whole point of it being the
+        // same object either way.
+        // Resign first, then let go of the accessory view. UIKit wraps an inputAccessoryView in
+        // a UICompatibilityInputViewController owned by the keyboard's UIInputWindowController;
+        // moving the view out while that is still standing throws
+        // UIViewControllerHierarchyInconsistency. Resigning takes the wrapper down first.
         [keyInputField resignFirstResponder];
-        if (macroPad == nil) {
-            [self pinKeyBar];
-        } else {
-            [keyBar removeFromSuperview];
-        }
+        keyInputField.inputAccessoryView = nil;
+        [self pinKeyBar];
+        // And the columns stop above it rather than running underneath.
+        macroPad.bottomInset = [KeyBarView barThickness];
     }
 
     systemKeyboardVisible = withSystemKeyboard;
@@ -537,6 +541,10 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
         return self.superview.superview;
     }
     return self;
+}
+
+- (void)keyBarPadDidChange {
+    [macroPad reloadPad];
 }
 
 - (void)keyBarDidToggleSystemKeyboard {

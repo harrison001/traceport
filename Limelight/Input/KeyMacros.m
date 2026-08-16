@@ -89,6 +89,57 @@
 
 #pragma mark - The keyboard
 
++ (NSArray<KeyGroup *> *)keyboardGroupsForHost:(KeyMacroHost)host
+                                    profileKey:(NSString *)profileKey {
+    NSArray<NSString *> *hidden = [self hiddenKeyboardLabelsForProfile:profileKey];
+    if (hidden.count == 0) {
+        return [self keyboardGroupsForHost:host];
+    }
+
+    NSMutableArray<KeyGroup *> *groups = [NSMutableArray array];
+    for (KeyGroup *group in [self keyboardGroupsForHost:host]) {
+        NSMutableArray<KeyItem *> *items = [NSMutableArray array];
+        for (KeyItem *item in group.items) {
+            // Modifiers are never hidden: they anchor the left end and the one-shot state
+            // machine is what makes an unlisted chord typeable at all.
+            if (item.kind == KeyItemKindModifier || ![hidden containsObject:item.label]) {
+                [items addObject:item];
+            }
+        }
+        if (items.count > 0) {
+            [groups addObject:[KeyGroup groupWithItems:items]];
+        }
+    }
+    return groups;
+}
+
+static NSString *KeyHiddenDefaultsKey(NSString *profileKey) {
+    return [NSString stringWithFormat:@"KeyBar.%@.hidden",
+            profileKey.length > 0 ? profileKey : @"default"];
+}
+
++ (NSArray<NSString *> *)hiddenKeyboardLabelsForProfile:(NSString *)profileKey {
+    return [[NSUserDefaults standardUserDefaults]
+            stringArrayForKey:KeyHiddenDefaultsKey(profileKey)] ?: @[];
+}
+
++ (void)hideKeyboardKey:(KeyItem *)item forProfile:(NSString *)profileKey {
+    NSArray<NSString *> *hidden = [self hiddenKeyboardLabelsForProfile:profileKey];
+    if ([hidden containsObject:item.label]) {
+        return;
+    }
+    [[NSUserDefaults standardUserDefaults] setObject:[hidden arrayByAddingObject:item.label]
+                                             forKey:KeyHiddenDefaultsKey(profileKey)];
+}
+
++ (void)resetKeyboardForProfile:(NSString *)profileKey {
+    [[NSUserDefaults standardUserDefaults] removeObjectForKey:KeyHiddenDefaultsKey(profileKey)];
+}
+
++ (BOOL)keyboardIsCustomisedForProfile:(NSString *)profileKey {
+    return [self hiddenKeyboardLabelsForProfile:profileKey].count > 0;
+}
+
 + (NSArray<KeyGroup *> *)keyboardGroupsForHost:(KeyMacroHost)host {
     BOOL mac = host == KeyMacroHostMacOS;
     return @[
@@ -295,7 +346,12 @@ static NSString *KeyPadDefaultsKey(NSString *profileKey) {
 /// Every catalogue item by label, so a stored label resolves back to the real behaviour.
 + (NSDictionary<NSString *, KeyItem *> *)catalogueByLabelForHost:(KeyMacroHost)host {
     NSMutableDictionary<NSString *, KeyItem *> *byLabel = [NSMutableDictionary dictionary];
-    for (KeyGroup *group in [self macroCatalogueForHost:host]) {
+    // Keyboard keys included: a key from the line can be put on the pad, which is what the old
+    // "Add to Mine" did and the reason anyone long-presses one.
+    NSMutableArray<KeyGroup *> *sources = [NSMutableArray array];
+    [sources addObjectsFromArray:[self keyboardGroupsForHost:host]];
+    [sources addObjectsFromArray:[self macroCatalogueForHost:host]];
+    for (KeyGroup *group in sources) {
         for (KeyItem *item in group.items) {
             byLabel[item.label] = item;
         }

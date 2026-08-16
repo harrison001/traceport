@@ -108,6 +108,14 @@ typedef NS_ENUM(NSInteger, KeyItemKind) {
 /// line is what makes it a whole keyboard rather than half of one.
 + (NSArray<KeyGroup *> *)keyboardGroupsForHost:(KeyMacroHost)host;
 
+/// The same, with whatever the user has hidden taken out.
++ (NSArray<KeyGroup *> *)keyboardGroupsForHost:(KeyMacroHost)host
+                                    profileKey:(nullable NSString *)profileKey;
+
++ (void)hideKeyboardKey:(KeyItem *)item forProfile:(nullable NSString *)profileKey;
++ (void)resetKeyboardForProfile:(nullable NSString *)profileKey;
++ (BOOL)keyboardIsCustomisedForProfile:(nullable NSString *)profileKey;
+
 #pragma mark - The pad
 
 /// Everything that can be put on the pad, grouped by category for the add menu.
