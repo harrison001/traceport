@@ -33,6 +33,8 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
 #if !TARGET_OS_TV
     KeyBarView* keyBar;
     BOOL systemKeyboardVisible;
+    /// Identifies the host, so its operating system is remembered per machine.
+    NSString* hostKey;
 #endif
     
     float streamAspectRatio;
@@ -62,6 +64,9 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
                   config:(StreamConfiguration*)streamConfig {
     self->interactionDelegate = interactionDelegate;
     self->streamAspectRatio = (float)streamConfig.width / (float)streamConfig.height;
+#if !TARGET_OS_TV
+    self->hostKey = streamConfig.host;
+#endif
     
     TemporarySettings* settings = [[[DataManager alloc] init] getSettings];
     
@@ -376,7 +381,8 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
                 keyInputField.delegate = self;
                 keyInputField.text = @"0";
 #if !TARGET_OS_TV
-                keyBar = [[KeyBarView alloc] initWithFrame:CGRectMake(0, 0, self.bounds.size.width, 44)];
+                keyBar = [[KeyBarView alloc] initWithFrame:CGRectMake(0, 0, self.bounds.size.width, 44)
+                                                  hostKey:hostKey];
                 keyBar.delegate = self;
 
                 // With a hardware keyboard attached there is nothing to type on screen, and

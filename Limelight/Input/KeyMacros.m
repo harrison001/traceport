@@ -258,4 +258,24 @@
     return KeyMacroHostMacOS;
 }
 
+/// Per host, because one person may drive a Mac from the sofa and a Windows box at work, and
+/// the modifier that means "the system key" is not the same on both.
+static NSString *KeyMacroHostDefaultsKey(NSString *key) {
+    return [NSString stringWithFormat:@"KeyBarHostKind.%@", key.length > 0 ? key : @"default"];
+}
+
++ (KeyMacroHost)hostKindForKey:(NSString *)key {
+    NSString *defaultsKey = KeyMacroHostDefaultsKey(key);
+    NSNumber *stored = [[NSUserDefaults standardUserDefaults] objectForKey:defaultsKey];
+    return stored != nil ? (KeyMacroHost)stored.integerValue : [self defaultHost];
+}
+
++ (void)setHostKind:(KeyMacroHost)kind forKey:(NSString *)key {
+    [[NSUserDefaults standardUserDefaults] setInteger:kind forKey:KeyMacroHostDefaultsKey(key)];
+}
+
++ (NSString *)nameForHostKind:(KeyMacroHost)kind {
+    return kind == KeyMacroHostMacOS ? @"macOS" : @"Windows";
+}
+
 @end

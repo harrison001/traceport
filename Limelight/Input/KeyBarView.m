@@ -74,6 +74,7 @@ static UIColor *KeyBarModifierKeyColor(void) {
 
     NSArray<KeyPage *> *_pages;
     NSUInteger _pageIndex;
+    NSString *_hostKey;
 
     /// Modifier buttons on the current page. Rebuilt with the page, but the held state that
     /// matters lives on the host, so it is re-applied rather than reset.
@@ -109,13 +110,18 @@ static UIColor *KeyBarModifierKeyColor(void) {
 }
 
 - (instancetype)initWithFrame:(CGRect)frame {
+    return [self initWithFrame:frame hostKey:nil];
+}
+
+- (instancetype)initWithFrame:(CGRect)frame hostKey:(NSString *)hostKey {
     self = [super initWithFrame:frame];
     if (self == nil) {
         return nil;
     }
 
+    _hostKey = [hostKey copy];
     _modifierButtons = [NSMutableArray array];
-    _pages = [KeyMacros pagesForHost:[KeyMacros defaultHost]];
+    _pages = [KeyMacros pagesForHost:[KeyMacros hostKindForKey:_hostKey]];
     _pageIndex = 0;
 
     // On iPad the stream fills the screen almost exactly — a 1512x982 Mac desktop into a
@@ -229,6 +235,7 @@ static UIColor *KeyBarModifierKeyColor(void) {
 
     [_pageButton setTitle:page.name forState:UIControlStateNormal];
     [self restoreModifierAppearance];
+    [self rebuildPageMenu];
 }
 
 - (void)nextPage {
@@ -256,7 +263,11 @@ static UIColor *KeyBarModifierKeyColor(void) {
 - (void)buildControls {
     _pageButton = [self buttonWithTitle:@"Keys" wide:YES];
     [_pageButton addTarget:self action:@selector(pageButtonPressed) forControlEvents:UIControlEventTouchUpInside];
+    // Tap for the next page, which is the common action; long press for everything else, so
+    // jumping to a page and changing the host kind cost nothing in the common case.
+    _pageButton.showsMenuAsPrimaryAction = NO;
     [_controls addArrangedSubview:_pageButton];
+    [self rebuildPageMenu];
 
     _keyboardToggle = [self buttonWithTitle:@"⌨" wide:NO];
     [_keyboardToggle addTarget:self action:@selector(keyboardTogglePressed) forControlEvents:UIControlEventTouchUpInside];
@@ -450,6 +461,53 @@ static UIColor *KeyBarModifierKeyColor(void) {
 
 - (void)pageButtonPressed {
     [self nextPage];
+}
+
+/// Long-press menu: jump straight to a page, and say which operating system this host runs.
+- (void)rebuildPageMenu {
+    NSMutableArray<UIAction *> *pageActions = [NSMutableArray array];
+    [_pages enumerateObjectsUsingBlock:^(KeyPage *page, NSUInteger index, BOOL *stop) {
+        UIAction *action = [UIAction actionWithTitle:page.name
+                                               image:nil
+                                          identifier:nil
+                                             handler:^(__kindof UIAction *sender) {
+            [self showPage:index];
+        }];
+        action.state = index == self->_pageIndex ? UIMenuElementStateOn : UIMenuElementStateOff;
+        [pageActions addObject:action];
+    }];
+
+    KeyMacroHost current = [KeyMacros hostKindForKey:_hostKey];
+    NSMutableArray<UIAction *> *hostActions = [NSMutableArray array];
+    for (NSNumber *kindNumber in @[@(KeyMacroHostMacOS), @(KeyMacroHostWindows)]) {
+        KeyMacroHost kind = (KeyMacroHost)kindNumber.integerValue;
+        UIAction *action = [UIAction actionWithTitle:[KeyMacros nameForHostKind:kind]
+                                               image:nil
+                                          identifier:nil
+                                             handler:^(__kindof UIAction *sender) {
+            [self changeHostKind:kind];
+        }];
+        action.state = kind == current ? UIMenuElementStateOn : UIMenuElementStateOff;
+        [hostActions addObject:action];
+    }
+
+    UIMenu *hostMenu = [UIMenu menuWithTitle:@"Host runs"
+                                       image:nil
+                                  identifier:nil
+                                     options:UIMenuOptionsDisplayInline
+                                    children:hostActions];
+
+    _pageButton.menu = [UIMenu menuWithTitle:@"" children:[pageActions arrayByAddingObject:hostMenu]];
+}
+
+/// Changing the host kind changes the modifier labels and the whole action set, so the bar is
+/// rebuilt from the new pages. Anything held is released first: the keys about to disappear
+/// are the ones the host has down.
+- (void)changeHostKind:(KeyMacroHost)kind {
+    [self releaseHeldModifiers];
+    [KeyMacros setHostKind:kind forKey:_hostKey];
+    _pages = [KeyMacros pagesForHost:kind];
+    [self showPage:0];
 }
 
 - (void)keyboardTogglePressed {

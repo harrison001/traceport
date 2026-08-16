@@ -73,12 +73,18 @@ typedef NS_ENUM(NSInteger, KeyItemKind) {
 /// the one thing about them worth copying.
 + (NSArray<KeyPage *> *)pagesForHost:(KeyMacroHost)host;
 
-/// The host to assume until the user says otherwise.
+/// Which operating system a given host runs, as the user has told us.
 ///
-/// The client cannot discover this: Sunshine's /serverinfo carries no platform field. Note
-/// that Stream Deck switches profiles by which application is focused, which is a better
-/// signal than the operating system and one we could actually obtain — Moonlight is what
-/// launched the app on the host, so it knows which one is running.
+/// The client cannot discover this on its own: Sunshine's /serverinfo carries no platform
+/// field, so there is nothing to read and nothing to infer that would not be a guess. It is
+/// therefore a setting, remembered per host, and macOS until told otherwise.
++ (KeyMacroHost)hostKindForKey:(nullable NSString *)key;
++ (void)setHostKind:(KeyMacroHost)kind forKey:(nullable NSString *)key;
+
+/// Name shown for a host kind.
++ (NSString *)nameForHostKind:(KeyMacroHost)kind;
+
+/// The host to assume when nothing has been chosen.
 + (KeyMacroHost)defaultHost;
 
 @end

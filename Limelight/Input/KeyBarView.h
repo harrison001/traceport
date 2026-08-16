@@ -28,6 +28,9 @@ NS_ASSUME_NONNULL_BEGIN
 
 @property (nonatomic, weak) id<KeyBarViewDelegate> delegate;
 
+/// Identifies the host, so which operating system it runs is remembered per machine.
+- (instancetype)initWithFrame:(CGRect)frame hostKey:(nullable NSString *)hostKey;
+
 /// Releases every modifier the bar is holding down, on the host and visually.
 ///
 /// Must be called when the stream ends or the bar goes away, otherwise the host is left
