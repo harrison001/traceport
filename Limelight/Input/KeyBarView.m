@@ -1113,8 +1113,12 @@ typedef NS_ENUM(NSInteger, KeyBarLayout) {
     return [UIMenu menuWithTitle:item.detail ?: item.label children:actions];
 }
 
-/// Everything not already on the pad, grouped the way the catalogue is.
-- (UIMenu *)addToPadMenu {
+/// The whole catalogue, ticked where a key is already on the pad, tapping to turn it on or off.
+///
+/// It used to list only what was missing, which reads as the rest having been taken away —
+/// looking for a key you already have and not finding it says "gone", not "you have it". The
+/// full list with ticks says both at once, and doubles as the way to take one off.
+- (UIMenu *)catalogueMenu {
     __weak KeyBarView *weakSelf = self;
     NSMutableSet<NSString *> *onPad = [NSMutableSet set];
     for (KeyGroup *group in _groups) {
@@ -1127,21 +1131,27 @@ typedef NS_ENUM(NSInteger, KeyBarLayout) {
     for (KeyGroup *group in [KeyMacros macroCatalogueForHost:[self hostKind]]) {
         NSMutableArray<UIAction *> *choices = [NSMutableArray array];
         for (KeyItem *item in group.items) {
-            if ([onPad containsObject:item.label]) {
-                continue;
-            }
+            BOOL isOn = [onPad containsObject:item.label];
             // Label and meaning together: "⌘`" on its own is not something anyone recognises.
             NSString *title = item.detail.length > 0
                 ? [NSString stringWithFormat:@"%@   %@", item.label, item.detail]
                 : item.label;
-            [choices addObject:[UIAction actionWithTitle:title
+            UIAction *action = [UIAction actionWithTitle:title
                                                    image:nil
                                               identifier:nil
                                                  handler:^(__kindof UIAction *sender) {
-                [KeyMacros addToPad:item forProfile:weakSelf.profileKeyForMenu
-                               host:weakSelf.hostKind];
+                if (isOn) {
+                    [KeyMacros removeFromPad:item forProfile:weakSelf.profileKeyForMenu
+                                        host:weakSelf.hostKind];
+                } else {
+                    [KeyMacros addToPad:item forProfile:weakSelf.profileKeyForMenu
+                                   host:weakSelf.hostKind];
+                }
+                [weakSelf.padDelegate keyBarPadDidChange];
                 [weakSelf reloadGroups];
-            }]];
+            }];
+            action.state = isOn ? UIMenuElementStateOn : UIMenuElementStateOff;
+            [choices addObject:action];
         }
         if (choices.count > 0) {
             [categories addObject:[UIMenu menuWithTitle:group.name ?: @""
@@ -1152,8 +1162,8 @@ typedef NS_ENUM(NSInteger, KeyBarLayout) {
         }
     }
 
-    return [UIMenu menuWithTitle:@"Add"
-                           image:[UIImage systemImageNamed:@"plus"]
+    return [UIMenu menuWithTitle:@"Keys"
+                           image:[UIImage systemImageNamed:@"list.bullet"]
                       identifier:nil
                          options:0
                         children:categories];
@@ -1237,7 +1247,7 @@ typedef NS_ENUM(NSInteger, KeyBarLayout) {
     NSMutableArray<UIMenuElement *> *sections = [NSMutableArray array];
 
     if (_content != KeyBarContentKeyboard) {
-        [sections addObject:[self addToPadMenu]];
+        [sections addObject:[self catalogueMenu]];
         [sections addObject:[UIAction actionWithTitle:@"Add App…"
                                                 image:[UIImage systemImageNamed:@"square.grid.2x2"]
                                            identifier:nil
