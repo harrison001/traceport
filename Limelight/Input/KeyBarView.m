@@ -67,13 +67,12 @@ static UIColor *KeyBarModifierKeyColor(void) {
 }
 
 @implementation KeyBarView {
-    /// Scrolls: the current page.
+    /// Scrolls: every key there is, in one row.
     UIStackView *_row;
-    /// Does not scroll: page control and the two dismissal controls.
+    /// Does not scroll: the settings, keyboard and dismissal controls.
     UIStackView *_controls;
 
-    NSArray<KeyPage *> *_pages;
-    NSUInteger _pageIndex;
+    NSArray<KeyGroup *> *_groups;
     NSString *_hostKey;
     /// Host and app together: what you pin while driving one app should not follow you to another.
     NSString *_profileKey;
@@ -88,7 +87,7 @@ static UIColor *KeyBarModifierKeyColor(void) {
     UIKeyModifierFlags _heldOneShot;
     UIKeyModifierFlags _heldLocked;
 
-    KeyBarButton *_pageButton;
+    KeyBarButton *_settingsButton;
     KeyBarButton *_keyboardToggle;
 }
 
@@ -126,8 +125,7 @@ static UIColor *KeyBarModifierKeyColor(void) {
         : [hostKey copy];
     _axis = UILayoutConstraintAxisHorizontal;
     _modifierButtons = [NSMutableArray array];
-    _pages = [KeyMacros pagesForHost:[KeyMacros hostKindForKey:_hostKey] profileKey:_profileKey];
-    _pageIndex = 0;
+    _groups = [KeyMacros groupsForHost:[KeyMacros hostKindForKey:_hostKey] profileKey:_profileKey];
 
     // On iPad the stream fills the screen almost exactly — a 1512x982 Mac desktop into a
     // 1133x744 iPad leaves about 4pt of letterbox — so the bar has no dead space to sit in
@@ -178,7 +176,7 @@ static UIColor *KeyBarModifierKeyColor(void) {
     [self applyAxisConstraints];
 
     [self buildControls];
-    [self showPage:0];
+    [self buildRow];
 
     // The caller may have sized us before the keys existed; take the height we actually need.
     CGRect bounds = self.frame;
@@ -207,7 +205,8 @@ static UIColor *KeyBarModifierKeyColor(void) {
     _row.axis = axis;
     _controls.axis = axis;
     [self applyAxisConstraints];
-    [self showPage:_pageIndex];
+    // The group separators are sized along the axis, so the row is rebuilt rather than rotated.
+    [self buildRow];
     [self invalidateIntrinsicContentSize];
 }
 
@@ -264,24 +263,22 @@ static UIColor *KeyBarModifierKeyColor(void) {
     [_controls setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:_axis];
 }
 
-#pragma mark - Pages
+#pragma mark - The row
 
-/// Rebuilds the scrolling area for one page.
+/// Rebuilds the scrolling row.
 ///
-/// Modifiers and the clipboard appear on nearly every page on purpose: paging only costs a
-/// tap for what is not already in front of you, so the items used constantly are on all of
-/// them and never cost anything.
-- (void)showPage:(NSUInteger)index {
-    _pageIndex = index % _pages.count;
-    KeyPage *page = _pages[_pageIndex];
-
+/// Every key is in it, separated into groups by a wide gap. There is no paging: a page control
+/// costs a tap and a guess about which page a key is on, and a bar that scrolls costs a flick
+/// that shows you the answer on the way. Modifiers are a state machine, not a held finger, so
+/// arming one and then scrolling to the key it modifies works.
+- (void)buildRow {
     for (UIView *view in _row.arrangedSubviews) {
         [view removeFromSuperview];
     }
     [_modifierButtons removeAllObjects];
 
     BOOL first = YES;
-    for (KeyGroup *group in page.groups) {
+    for (KeyGroup *group in _groups) {
         if (!first) {
             [self addGroupSeparator];
         }
@@ -292,17 +289,11 @@ static UIColor *KeyBarModifierKeyColor(void) {
         }
     }
 
-    [_pageButton setTitle:page.name forState:UIControlStateNormal];
     [self restoreModifierAppearance];
-    [self rebuildPageMenu];
 }
 
-- (void)nextPage {
-    [self showPage:_pageIndex + 1];
-}
-
-/// A page change rebuilds the buttons, but the host still has whatever was held down. Put the
-/// new buttons back into that state rather than letting the display disagree with the host.
+/// A rebuild replaces the buttons, but the host still has whatever was held down. Put the new
+/// buttons back into that state rather than letting the display disagree with the host.
 - (void)restoreModifierAppearance {
     for (KeyBarButton *button in _modifierButtons) {
         UIKeyModifierFlags flag = button.item.modifiers;
@@ -320,13 +311,12 @@ static UIColor *KeyBarModifierKeyColor(void) {
 #pragma mark - Building
 
 - (void)buildControls {
-    _pageButton = [self buttonWithTitle:@"Keys" wide:YES];
-    [_pageButton addTarget:self action:@selector(pageButtonPressed) forControlEvents:UIControlEventTouchUpInside];
-    // Tap for the next page, which is the common action; long press for everything else, so
-    // jumping to a page and changing the host kind cost nothing in the common case.
-    _pageButton.showsMenuAsPrimaryAction = NO;
-    [_controls addArrangedSubview:_pageButton];
-    [self rebuildPageMenu];
+    // Which operating system the host runs is the one thing that has to be reachable and has
+    // nowhere else to live. A single tap opens it; it is not something anyone sets twice.
+    _settingsButton = [self buttonWithTitle:@"⋯" wide:NO];
+    _settingsButton.showsMenuAsPrimaryAction = YES;
+    _settingsButton.menu = [self hostKindMenu];
+    [_controls addArrangedSubview:_settingsButton];
 
     _keyboardToggle = [self buttonWithTitle:@"⌨" wide:NO];
     [_keyboardToggle addTarget:self action:@selector(keyboardTogglePressed) forControlEvents:UIControlEventTouchUpInside];
@@ -558,22 +548,18 @@ static UIColor *KeyBarModifierKeyColor(void) {
 
 #pragma mark - Controls
 
-- (void)pageButtonPressed {
-    [self nextPage];
-}
-
-/// Long-press menu on a key: put it on your own page, or take it away.
+/// Long-press menu on a key: move it to the near end of the row, or take it away.
 - (UIMenu *)customisationMenuForItem:(KeyItem *)item {
     __weak KeyBarView *weakSelf = self;
     NSMutableArray<UIMenuElement *> *actions = [NSMutableArray array];
 
     if (![KeyMacros isPinned:item forProfile:_profileKey]) {
-        [actions addObject:[UIAction actionWithTitle:@"Add to Mine"
+        [actions addObject:[UIAction actionWithTitle:@"Move to Front"
                                                image:[UIImage systemImageNamed:@"pin"]
                                           identifier:nil
                                              handler:^(__kindof UIAction *sender) {
             [KeyMacros pinItem:item forProfile:weakSelf.profileKeyForMenu];
-            [weakSelf reloadPagesKeepingPage:NO];
+            [weakSelf reloadGroups];
         }]];
     }
 
@@ -582,7 +568,7 @@ static UIColor *KeyBarModifierKeyColor(void) {
                                       identifier:nil
                                          handler:^(__kindof UIAction *sender) {
         [KeyMacros hideItem:item forProfile:weakSelf.profileKeyForMenu];
-        [weakSelf reloadPagesKeepingPage:YES];
+        [weakSelf reloadGroups];
     }]];
 
     if ([KeyMacros hasCustomisationForProfile:_profileKey]) {
@@ -591,7 +577,7 @@ static UIColor *KeyBarModifierKeyColor(void) {
                                          identifier:nil
                                             handler:^(__kindof UIAction *sender) {
             [KeyMacros resetProfile:weakSelf.profileKeyForMenu];
-            [weakSelf reloadPagesKeepingPage:NO];
+            [weakSelf reloadGroups];
         }];
         reset.attributes = UIMenuElementAttributesDestructive;
         [actions addObject:[UIMenu menuWithTitle:@"" image:nil identifier:nil
@@ -605,57 +591,43 @@ static UIColor *KeyBarModifierKeyColor(void) {
     return _profileKey;
 }
 
-- (void)reloadPagesKeepingPage:(BOOL)keep {
-    NSUInteger page = keep ? _pageIndex : 0;
-    _pages = [KeyMacros pagesForHost:[KeyMacros hostKindForKey:_hostKey] profileKey:_profileKey];
-    [self showPage:page];
+- (void)reloadGroups {
+    _groups = [KeyMacros groupsForHost:[KeyMacros hostKindForKey:_hostKey] profileKey:_profileKey];
+    [self buildRow];
+    // Rebuilt rather than left alone: the menu carries the tick showing which host kind is set.
+    _settingsButton.menu = [self hostKindMenu];
 }
 
-/// Long-press menu: jump straight to a page, and say which operating system this host runs.
-- (void)rebuildPageMenu {
-    NSMutableArray<UIAction *> *pageActions = [NSMutableArray array];
-    [_pages enumerateObjectsUsingBlock:^(KeyPage *page, NSUInteger index, BOOL *stop) {
-        UIAction *action = [UIAction actionWithTitle:page.name
-                                               image:nil
-                                          identifier:nil
-                                             handler:^(__kindof UIAction *sender) {
-            [self showPage:index];
-        }];
-        action.state = index == self->_pageIndex ? UIMenuElementStateOn : UIMenuElementStateOff;
-        [pageActions addObject:action];
-    }];
-
+/// Which operating system this host runs. It decides the modifier labels and the whole action
+/// set, and cannot be discovered: Sunshine's /serverinfo carries no platform field.
+- (UIMenu *)hostKindMenu {
     KeyMacroHost current = [KeyMacros hostKindForKey:_hostKey];
-    NSMutableArray<UIAction *> *hostActions = [NSMutableArray array];
+    NSMutableArray<UIAction *> *actions = [NSMutableArray array];
+    // Weak, because the button holds the menu, the menu holds this block, and the button is
+    // ours. A strong self here would keep the whole bar alive after it is dismissed.
+    __weak KeyBarView *weakSelf = self;
+
     for (NSNumber *kindNumber in @[@(KeyMacroHostMacOS), @(KeyMacroHostWindows)]) {
         KeyMacroHost kind = (KeyMacroHost)kindNumber.integerValue;
         UIAction *action = [UIAction actionWithTitle:[KeyMacros nameForHostKind:kind]
                                                image:nil
                                           identifier:nil
                                              handler:^(__kindof UIAction *sender) {
-            [self changeHostKind:kind];
+            [weakSelf changeHostKind:kind];
         }];
         action.state = kind == current ? UIMenuElementStateOn : UIMenuElementStateOff;
-        [hostActions addObject:action];
+        [actions addObject:action];
     }
 
-    UIMenu *hostMenu = [UIMenu menuWithTitle:@"Host runs"
-                                       image:nil
-                                  identifier:nil
-                                     options:UIMenuOptionsDisplayInline
-                                    children:hostActions];
-
-    _pageButton.menu = [UIMenu menuWithTitle:@"" children:[pageActions arrayByAddingObject:hostMenu]];
+    return [UIMenu menuWithTitle:@"Host runs" children:actions];
 }
 
-/// Changing the host kind changes the modifier labels and the whole action set, so the bar is
-/// rebuilt from the new pages. Anything held is released first: the keys about to disappear
-/// are the ones the host has down.
+/// Anything held is released first: the keys about to be replaced are the ones the host has
+/// down.
 - (void)changeHostKind:(KeyMacroHost)kind {
     [self releaseHeldModifiers];
     [KeyMacros setHostKind:kind forKey:_hostKey];
-    _pages = [KeyMacros pagesForHost:kind profileKey:_profileKey];
-    [self showPage:0];
+    [self reloadGroups];
 }
 
 - (void)keyboardTogglePressed {

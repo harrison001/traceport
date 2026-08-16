@@ -5,10 +5,10 @@
 //  What the key bar contains, as data rather than as code.
 //
 //  Shaped after the two systems that do this best. Stream Deck Mobile organises actions into
-//  folders and pages of labelled buttons and switches the whole layout by context; Termius
-//  builds its key bar from user-defined groups of four that can be reordered. Both are
-//  configurable, both label actions with words, and both group them. Jump Desktop, which
-//  hardcodes its own list, is the one that cannot follow a user whose habits differ.
+//  labelled buttons and switches the whole layout by context; Termius builds its key bar from
+//  user-defined groups that can be reordered. Both are configurable, both label actions with
+//  words, and both group them. Jump Desktop, which hardcodes its own list, is the one that
+//  cannot follow a user whose habits differ.
 //
 //  Nothing here is configurable yet, but everything is data, so making it configurable is a
 //  matter of persisting these structures rather than rewriting the bar.
@@ -73,32 +73,26 @@ typedef NS_ENUM(NSInteger, KeyItemKind) {
 + (instancetype)groupWithItems:(NSArray<KeyItem *> *)items;
 @end
 
-/// One screenful of groups, reachable from the page control.
-@interface KeyPage : NSObject
-@property (nonatomic, copy, readonly) NSString *name;
-@property (nonatomic, copy, readonly) NSArray<KeyGroup *> *groups;
-+ (instancetype)pageNamed:(NSString *)name groups:(NSArray<KeyGroup *> *)groups;
-@end
-
 @interface KeyMacros : NSObject
 
-/// The pages for a host.
+/// Every group for a host, in one flat list.
 ///
-/// Modifiers and the clipboard repeat across pages on purpose. Paging costs a tap only for
-/// what is not on the current page, so putting the universally used items on every page
-/// removes that cost for almost everything — which is how Jump Desktop's keypads work, and
-/// the one thing about them worth copying.
-+ (NSArray<KeyPage *> *)pagesForHost:(KeyMacroHost)host;
+/// The bar is a single scrolling row, so the order here is the order under the thumb: what is
+/// used constantly comes first and is reachable without scrolling, and the long tails — the
+/// navigation cluster, the function keys — sit at the end where they cost nothing until they
+/// are wanted. There are no pages: a modifier armed on the bar stays armed while you scroll,
+/// so nothing has to be visible at the same time as anything else.
++ (NSArray<KeyGroup *> *)groupsForHost:(KeyMacroHost)host;
 
-/// The pages for a host, with the user's own changes applied.
+/// Every group for a host, with the user's own changes applied.
 ///
 /// `profileKey` identifies host and streamed app together. Stream Deck switches its whole
 /// layout by which application is focused, and Moonlight is the thing that launched the app
 /// on the host, so the same signal is available here for free: what you pin while driving a
 /// terminal does not follow you into a design tool.
-+ (NSArray<KeyPage *> *)pagesForHost:(KeyMacroHost)host profileKey:(nullable NSString *)profileKey;
++ (NSArray<KeyGroup *> *)groupsForHost:(KeyMacroHost)host profileKey:(nullable NSString *)profileKey;
 
-/// Adds an item to the profile's own page, which is shown first when it has anything in it.
+/// Moves an item to the front of the row, ahead of everything but the modifiers.
 + (void)pinItem:(KeyItem *)item forProfile:(nullable NSString *)profileKey;
 /// Hides an item everywhere in this profile.
 + (void)hideItem:(KeyItem *)item forProfile:(nullable NSString *)profileKey;

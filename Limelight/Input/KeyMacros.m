@@ -66,22 +66,9 @@
 
 @end
 
-@implementation KeyPage
-
-+ (instancetype)pageNamed:(NSString *)name groups:(NSArray<KeyGroup *> *)groups {
-    KeyPage *page = [[KeyPage alloc] init];
-    if (page != nil) {
-        page->_name = [name copy];
-        page->_groups = [groups copy];
-    }
-    return page;
-}
-
-@end
-
 @implementation KeyMacros
 
-/// Always leftmost, on every page, so their position never moves.
+/// Always leftmost, so their position never moves.
 + (KeyGroup *)modifiersForHost:(KeyMacroHost)host {
     BOOL mac = host == KeyMacroHostMacOS;
     return [KeyGroup groupWithItems:@[
@@ -92,7 +79,6 @@
     ]];
 }
 
-/// Repeated on most pages: these are used constantly and should never need a page change.
 + (KeyGroup *)clipboardForHost:(KeyMacroHost)host {
     UIKeyModifierFlags m = host == KeyMacroHostMacOS ? UIKeyModifierCommand : UIKeyModifierControl;
     return [KeyGroup groupWithItems:@[
@@ -121,90 +107,73 @@
     return [KeyGroup groupWithItems:items];
 }
 
-+ (NSArray<KeyPage *> *)pagesForHost:(KeyMacroHost)host {
-    return host == KeyMacroHostMacOS ? [self macOSPages] : [self windowsPages];
++ (KeyGroup *)editingKeys {
+    return [KeyGroup groupWithItems:@[
+        [KeyItem key:@"esc" code:0x1B],
+        [KeyItem key:@"tab" code:0x09],
+        [KeyItem key:@"↵" code:0x0D],
+        [KeyItem key:@"⌦" code:0x2E],
+    ]];
+}
+
+/// Home, End and the two paging keys. Last but one in the row: nothing here is used often
+/// enough to sit in front of the tmux commands.
++ (KeyGroup *)navigationKeys {
+    return [KeyGroup groupWithItems:@[
+        [KeyItem key:@"↖" code:0x24],
+        [KeyItem key:@"↘" code:0x23],
+        [KeyItem key:@"⇞" code:0x21],
+        [KeyItem key:@"⇟" code:0x22],
+    ]];
+}
+
++ (NSArray<KeyGroup *> *)groupsForHost:(KeyMacroHost)host {
+    return host == KeyMacroHostMacOS ? [self macOSGroups] : [self windowsGroups];
 }
 
 /// The macOS action set is not designed here: it is what TraceRecorder's Quick Input panel
 /// ended up with after daily use, help text and all, relabelled from chords to what they do.
-+ (NSArray<KeyPage *> *)macOSPages {
-    static NSArray<KeyPage *> *pages;
++ (NSArray<KeyGroup *> *)macOSGroups {
+    static NSArray<KeyGroup *> *groups;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        KeyGroup *modifiers = [self modifiersForHost:KeyMacroHostMacOS];
-        KeyGroup *clipboard = [self clipboardForHost:KeyMacroHostMacOS];
+        groups = [@[
+            [self modifiersForHost:KeyMacroHostMacOS],
+            [self editingKeys],
+            [self arrows],
+            [self clipboardForHost:KeyMacroHostMacOS],
+        ] arrayByAddingObjectsFromArray:[self tmuxGroups]];
 
-        pages = @[
-            [KeyPage pageNamed:@"Keys" groups:@[
-                modifiers,
-                clipboard,
-                [KeyGroup groupWithItems:@[
-                    [KeyItem key:@"esc" code:0x1B],
-                    [KeyItem key:@"tab" code:0x09],
-                    [KeyItem key:@"↵" code:0x0D],
-                    [KeyItem key:@"⌦" code:0x2E],
-                ]],
-                [self arrows],
+        groups = [groups arrayByAddingObjectsFromArray:@[
+            [KeyGroup groupWithItems:@[
+                [KeyItem macro:@"Switch App" code:0x09 flags:UIKeyModifierCommand],
+                [KeyItem macro:@"Windows" code:0xC0 flags:UIKeyModifierCommand],
+                [KeyItem macro:@"Close" code:0x57 flags:UIKeyModifierCommand],
+                [KeyItem macro:@"Quit" code:0x51 flags:UIKeyModifierCommand],
+                [KeyItem macro:@"Hide" code:0x48 flags:UIKeyModifierCommand],
+                [KeyItem macro:@"Minimise" code:0x4D flags:UIKeyModifierCommand],
+                [KeyItem macro:@"Full Screen" code:0x46
+                          flags:UIKeyModifierCommand | UIKeyModifierControl],
             ]],
-
-            [KeyPage pageNamed:@"Apps" groups:@[
-                modifiers,
-                clipboard,
-                [KeyGroup groupWithItems:@[
-                    [KeyItem macro:@"Switch App" code:0x09 flags:UIKeyModifierCommand],
-                    [KeyItem macro:@"Windows" code:0xC0 flags:UIKeyModifierCommand],
-                    [KeyItem macro:@"Close" code:0x57 flags:UIKeyModifierCommand],
-                    [KeyItem macro:@"Quit" code:0x51 flags:UIKeyModifierCommand],
-                    [KeyItem macro:@"Hide" code:0x48 flags:UIKeyModifierCommand],
-                    [KeyItem macro:@"Minimise" code:0x4D flags:UIKeyModifierCommand],
-                    [KeyItem macro:@"Full Screen" code:0x46
-                              flags:UIKeyModifierCommand | UIKeyModifierControl],
-                ]],
+            [KeyGroup groupWithItems:@[
+                [KeyItem macro:@"Mission Control" code:0x26 flags:UIKeyModifierControl],
+                [KeyItem macro:@"App Exposé" code:0x28 flags:UIKeyModifierControl],
+                [KeyItem macro:@"Desktop ←" code:0x25 flags:UIKeyModifierControl],
+                [KeyItem macro:@"Desktop →" code:0x27 flags:UIKeyModifierControl],
+                [KeyItem macro:@"Spotlight" code:0x20 flags:UIKeyModifierCommand],
+                [KeyItem macro:@"Screenshot" code:0x34
+                          flags:UIKeyModifierCommand | UIKeyModifierShift],
             ]],
-
-            [KeyPage pageNamed:@"Desktop" groups:@[
-                modifiers,
-                [KeyGroup groupWithItems:@[
-                    [KeyItem macro:@"Mission Control" code:0x26 flags:UIKeyModifierControl],
-                    [KeyItem macro:@"App Exposé" code:0x28 flags:UIKeyModifierControl],
-                    [KeyItem macro:@"Desktop ←" code:0x25 flags:UIKeyModifierControl],
-                    [KeyItem macro:@"Desktop →" code:0x27 flags:UIKeyModifierControl],
-                ]],
-                [KeyGroup groupWithItems:@[
-                    [KeyItem macro:@"Spotlight" code:0x20 flags:UIKeyModifierCommand],
-                    [KeyItem macro:@"Screenshot" code:0x34
-                              flags:UIKeyModifierCommand | UIKeyModifierShift],
-                    // macOS switches input source on Control-Space by default. TraceRecorder
-                    // labels this 中/A, which says what it does better than the chord does.
-                    [KeyItem macro:@"中/A" code:0x20 flags:UIKeyModifierControl],
-                ]],
+            [self navigationKeys],
+            [KeyGroup groupWithItems:@[
+                [KeyItem key:@"ins" code:0x2D],
+                [KeyItem key:@"Pause" code:0x13],
+                [KeyItem key:@"Break" code:0x03],
             ]],
-
-            [KeyPage pageNamed:@"Nav" groups:@[
-                modifiers,
-                [self arrows],
-                [KeyGroup groupWithItems:@[
-                    [KeyItem key:@"↖" code:0x24],
-                    [KeyItem key:@"↘" code:0x23],
-                    [KeyItem key:@"⇞" code:0x21],
-                    [KeyItem key:@"⇟" code:0x22],
-                ]],
-                [KeyGroup groupWithItems:@[
-                    [KeyItem key:@"ins" code:0x2D],
-                    [KeyItem key:@"Pause" code:0x13],
-                    [KeyItem key:@"Break" code:0x03],
-                ]],
-            ]],
-
-            [KeyPage pageNamed:@"Fn" groups:@[
-                modifiers,
-                [self functionKeys],
-            ]],
-
-            [self tmuxPageForHost:KeyMacroHostMacOS],
-        ];
+            [self functionKeys],
+        ]];
     });
-    return pages;
+    return groups;
 }
 
 /// tmux and every other prefix-key program need a sequence, not a chord: Control-A, released,
@@ -216,26 +185,26 @@
 /// between panes. tmux has dozens of bindings and none of the rest were being used.
 ///
 /// The prefix is Control-A rather than tmux's default Control-B, which is what he binds.
-+ (KeyPage *)tmuxPageForHost:(KeyMacroHost)host {
++ (NSArray<KeyGroup *> *)tmuxGroups {
     KeyStep *prefix = [KeyStep step:0x41 modifiers:UIKeyModifierControl];  // Control-A
     KeyItem *(^command)(NSString *, short) = ^KeyItem *(NSString *label, short key) {
         return [KeyItem sequence:label steps:@[prefix, [KeyStep step:key modifiers:0]]];
     };
 
-    return [KeyPage pageNamed:@"tmux" groups:@[
-        [self modifiersForHost:host],
+    return @[
         [KeyGroup groupWithItems:@[
             command(@"Zoom", 0x5A),
             // prefix b toggles synchronize-panes, so typing goes to every pane in the window
             // at once. Harrison's binding turns the tmux status bar red while it is on.
             command(@"Sync", 0x42),
-        ]],
-        // Prefix then an arrow moves the focus between panes.
-        [KeyGroup groupWithItems:@[
-            command(@"←", 0x25),
-            command(@"↓", 0x28),
-            command(@"↑", 0x26),
-            command(@"→", 0x27),
+            // Prefix then an arrow moves the focus between panes. Spelled out rather than
+            // labelled with a bare arrow: in one row these sit near the plain arrow keys, and
+            // two keys reading "←" that do different things is the ambiguity that makes a bar
+            // untrustworthy. It is also what the pin and hide list keys off.
+            command(@"⌃A←", 0x25),
+            command(@"⌃A↓", 0x28),
+            command(@"⌃A↑", 0x26),
+            command(@"⌃A→", 0x27),
         ]],
         // None of the above reaches tmux while the host is composing in a Chinese input
         // source: the Control chord gets through but the command key that follows is eaten
@@ -244,81 +213,51 @@
         // It is not sent automatically before every command, because Control-Space toggles
         // rather than selects — firing it blindly would switch a host that was already in
         // English into Chinese, breaking the thing it was meant to protect.
+        //
+        // macOS switches input source on Control-Space by default. TraceRecorder labels this
+        // 中/A, which says what it does better than the chord does.
         [KeyGroup groupWithItems:@[
             [KeyItem macro:@"中/A" code:0x20 flags:UIKeyModifierControl],
         ]],
-    ]];
+    ];
 }
 
 /// The Windows equivalents. Standard shortcuts rather than ones proven in use, which is a
 /// weaker basis than the macOS set and worth saying so.
-+ (NSArray<KeyPage *> *)windowsPages {
-    static NSArray<KeyPage *> *pages;
++ (NSArray<KeyGroup *> *)windowsGroups {
+    static NSArray<KeyGroup *> *groups;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        KeyGroup *modifiers = [self modifiersForHost:KeyMacroHostWindows];
-        KeyGroup *clipboard = [self clipboardForHost:KeyMacroHostWindows];
-
-        pages = @[
-            [KeyPage pageNamed:@"Keys" groups:@[
-                modifiers,
-                clipboard,
-                [KeyGroup groupWithItems:@[
-                    [KeyItem key:@"esc" code:0x1B],
-                    [KeyItem key:@"tab" code:0x09],
-                    [KeyItem key:@"↵" code:0x0D],
-                    [KeyItem key:@"⌦" code:0x2E],
-                ]],
-                [self arrows],
+        groups = @[
+            [self modifiersForHost:KeyMacroHostWindows],
+            [self editingKeys],
+            [self arrows],
+            [self clipboardForHost:KeyMacroHostWindows],
+            [KeyGroup groupWithItems:@[
+                [KeyItem macro:@"Switch App" code:0x09 flags:UIKeyModifierAlternate],
+                [KeyItem macro:@"Close" code:0x73 flags:UIKeyModifierAlternate],
+                [KeyItem macro:@"Desktop" code:0x44 flags:UIKeyModifierCommand],
+                [KeyItem macro:@"Explorer" code:0x45 flags:UIKeyModifierCommand],
+                [KeyItem macro:@"Lock" code:0x4C flags:UIKeyModifierCommand],
+                [KeyItem macro:@"Start" code:0x5B flags:0],
             ]],
-
-            [KeyPage pageNamed:@"Apps" groups:@[
-                modifiers,
-                clipboard,
-                [KeyGroup groupWithItems:@[
-                    [KeyItem macro:@"Switch App" code:0x09 flags:UIKeyModifierAlternate],
-                    [KeyItem macro:@"Close" code:0x73 flags:UIKeyModifierAlternate],
-                    [KeyItem macro:@"Desktop" code:0x44 flags:UIKeyModifierCommand],
-                    [KeyItem macro:@"Explorer" code:0x45 flags:UIKeyModifierCommand],
-                    [KeyItem macro:@"Lock" code:0x4C flags:UIKeyModifierCommand],
-                    [KeyItem macro:@"Start" code:0x5B flags:0],
-                ]],
+            [KeyGroup groupWithItems:@[
+                [KeyItem macro:@"Task Manager" code:0x1B
+                          flags:UIKeyModifierControl | UIKeyModifierShift],
+                [KeyItem macro:@"Game Bar" code:0x47 flags:UIKeyModifierCommand],
+                [KeyItem macro:@"Screenshot" code:0x53
+                          flags:UIKeyModifierCommand | UIKeyModifierShift],
             ]],
-
-            [KeyPage pageNamed:@"Desktop" groups:@[
-                modifiers,
-                [KeyGroup groupWithItems:@[
-                    [KeyItem macro:@"Task Manager" code:0x1B
-                              flags:UIKeyModifierControl | UIKeyModifierShift],
-                    [KeyItem macro:@"Game Bar" code:0x47 flags:UIKeyModifierCommand],
-                    [KeyItem macro:@"Screenshot" code:0x53
-                              flags:UIKeyModifierCommand | UIKeyModifierShift],
-                ]],
+            [self navigationKeys],
+            [KeyGroup groupWithItems:@[
+                [KeyItem key:@"ins" code:0x2D],
+                [KeyItem key:@"Pause" code:0x13],
+                [KeyItem key:@"Break" code:0x03],
             ]],
-
-            [KeyPage pageNamed:@"Nav" groups:@[
-                modifiers,
-                [self arrows],
-                [KeyGroup groupWithItems:@[
-                    [KeyItem key:@"↖" code:0x24],
-                    [KeyItem key:@"↘" code:0x23],
-                    [KeyItem key:@"⇞" code:0x21],
-                    [KeyItem key:@"⇟" code:0x22],
-                ]],
-                [KeyGroup groupWithItems:@[
-                    [KeyItem key:@"ins" code:0x2D],
-                    [KeyItem key:@"Pause" code:0x13],
-                    [KeyItem key:@"Break" code:0x03],
-                ]],
-            ]],
-
-            [KeyPage pageNamed:@"Fn" groups:@[
-                modifiers,
-                [self functionKeys],
-            ]],
+            [self functionKeys],
         ];
     });
-    return pages;
+    return groups;
 }
 
 + (KeyMacroHost)defaultHost {
@@ -394,8 +333,8 @@ static NSString *KeyProfileDefaultsKey(NSString *profileKey, NSString *field) {
         || [self storedListFor:profileKey field:@"hidden"].count > 0;
 }
 
-+ (NSArray<KeyPage *> *)pagesForHost:(KeyMacroHost)host profileKey:(NSString *)profileKey {
-    NSArray<KeyPage *> *base = [self pagesForHost:host];
++ (NSArray<KeyGroup *> *)groupsForHost:(KeyMacroHost)host profileKey:(NSString *)profileKey {
+    NSArray<KeyGroup *> *base = [self groupsForHost:host];
     NSArray<NSString *> *pinned = [self storedListFor:profileKey field:@"pinned"];
     NSArray<NSString *> *hidden = [self storedListFor:profileKey field:@"hidden"];
 
@@ -405,16 +344,17 @@ static NSString *KeyProfileDefaultsKey(NSString *profileKey, NSString *field) {
 
     // Look up the pinned labels in the base layout so a pinned item keeps its real behaviour.
     NSMutableDictionary<NSString *, KeyItem *> *byLabel = [NSMutableDictionary dictionary];
-    for (KeyPage *page in base) {
-        for (KeyGroup *group in page.groups) {
-            for (KeyItem *item in group.items) {
-                byLabel[item.label] = item;
-            }
+    for (KeyGroup *group in base) {
+        for (KeyItem *item in group.items) {
+            byLabel[item.label] = item;
         }
     }
 
-    NSMutableArray<KeyPage *> *pages = [NSMutableArray array];
+    NSMutableArray<KeyGroup *> *groups = [NSMutableArray array];
+    BOOL modifiersPlaced = NO;
 
+    // Pinned items go to the near end of the row, right after the modifiers. That is the whole
+    // of what pinning means now: there is one row, so "your own page" is "first under the thumb".
     if (pinned.count > 0) {
         NSMutableArray<KeyItem *> *items = [NSMutableArray array];
         for (NSString *label in pinned) {
@@ -424,32 +364,32 @@ static NSString *KeyProfileDefaultsKey(NSString *profileKey, NSString *field) {
             }
         }
         if (items.count > 0) {
-            // Modifiers lead every page, including this one, so their position never moves.
-            [pages addObject:[KeyPage pageNamed:@"Mine"
-                                         groups:@[[self modifiersForHost:host],
-                                                  [KeyGroup groupWithItems:items]]]];
+            [groups addObject:[self modifiersForHost:host]];
+            [groups addObject:[KeyGroup groupWithItems:items]];
+            modifiersPlaced = YES;
         }
     }
 
-    for (KeyPage *page in base) {
-        NSMutableArray<KeyGroup *> *groups = [NSMutableArray array];
-        for (KeyGroup *group in page.groups) {
-            NSMutableArray<KeyItem *> *items = [NSMutableArray array];
-            for (KeyItem *item in group.items) {
-                if (item.kind == KeyItemKindModifier || ![hidden containsObject:item.label]) {
+    for (KeyGroup *group in base) {
+        NSMutableArray<KeyItem *> *items = [NSMutableArray array];
+        for (KeyItem *item in group.items) {
+            if (item.kind == KeyItemKindModifier) {
+                // Modifiers are never hidden and appear exactly once, at the front.
+                if (!modifiersPlaced) {
                     [items addObject:item];
                 }
-            }
-            if (items.count > 0) {
-                [groups addObject:[KeyGroup groupWithItems:items]];
+            } else if (![hidden containsObject:item.label]) {
+                // A pinned item keeps its original place too, so muscle memory built before
+                // pinning still works.
+                [items addObject:item];
             }
         }
-        if (groups.count > 0) {
-            [pages addObject:[KeyPage pageNamed:page.name groups:groups]];
+        if (items.count > 0) {
+            [groups addObject:[KeyGroup groupWithItems:items]];
         }
     }
 
-    return pages;
+    return groups;
 }
 
 @end
