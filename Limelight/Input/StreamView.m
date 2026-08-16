@@ -17,6 +17,7 @@
 
 #if !TARGET_OS_TV
 #import "KeyBarView.h"
+#import "CaretTracker.h"
 
 @interface StreamView () <KeyBarViewDelegate, KeyBarPadObserver>
 @end
@@ -36,6 +37,9 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     /// The columns down the letterbox: a short list of macros the user chose. Nil when the
     /// stream leaves no letterbox to put them in, and then keyBar carries both.
     KeyBarView* macroPad;
+    CaretTracker* caretTracker;
+    /// How far the picture is currently lifted to clear the keyboard.
+    CGFloat pictureLift;
     BOOL systemKeyboardVisible;
     /// Identifies the host, so its operating system is remembered per machine.
     NSString* hostKey;
@@ -494,6 +498,76 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     systemKeyboardVisible = withSystemKeyboard;
     [keyBar setSystemKeyboardVisible:withSystemKeyboard];
     [macroPad setSystemKeyboardVisible:withSystemKeyboard];
+    [self updateCaretTracking];
+}
+
+#pragma mark - Keeping what you are typing into on screen
+
+/// Follows the host's caret only while the keyboard is covering the picture, which is the only
+/// time any of it matters.
+- (void)updateCaretTracking {
+    if (!systemKeyboardVisible) {
+        [caretTracker stop];
+        caretTracker = nil;
+        [self liftPictureBy:0];
+        return;
+    }
+    if (caretTracker != nil) {
+        return;
+    }
+
+    caretTracker = [[CaretTracker alloc] initWithHost:hostKey];
+    __weak StreamView *weakSelf = self;
+    caretTracker.onCaret = ^(CGRect normalisedCaret) {
+        [weakSelf caretMovedTo:normalisedCaret];
+    };
+    [caretTracker start];
+}
+
+/// Lifts the picture just far enough that the caret clears the top of the keyboard.
+///
+/// The caret arrives as a fraction of the host's display, so it lands wherever the picture is
+/// drawn without the client knowing anything about resolutions. A caret the host cannot report
+/// leaves the picture where it is rather than guessing — half the applications do not report
+/// one, and a picture that jumps to the wrong place is worse than one that does not move.
+- (void)caretMovedTo:(CGRect)normalisedCaret {
+    if (CGRectIsNull(normalisedCaret)) {
+        return;
+    }
+
+    CGSize video = [self getVideoAreaSize];
+    CGFloat videoTop = (self.bounds.size.height - video.height) / 2;
+    // The bottom of the caret line, in the picture's own coordinates before any lift.
+    CGFloat caretBottom = videoTop + (normalisedCaret.origin.y + normalisedCaret.size.height) * video.height;
+
+    CGFloat keyboardTop = self.bounds.size.height;
+    if (@available(iOS 15.0, *)) {
+        keyboardTop = self.keyboardLayoutGuide.layoutFrame.origin.y;
+    }
+    if (keyboardTop <= 0 || keyboardTop >= self.bounds.size.height) {
+        [self liftPictureBy:0];
+        return;
+    }
+
+    // A line of clearance, so the caret is not sitting exactly on the keyboard's edge.
+    CGFloat margin = normalisedCaret.size.height * video.height + 8;
+    CGFloat needed = caretBottom + margin - keyboardTop;
+    [self liftPictureBy:MAX(0, MIN(needed, videoTop + video.height))];
+}
+
+/// Moves the picture up without touching the stream view's own transform, which the scroll view
+/// owns for pinch zoom in touchscreen mode. Touch coordinates follow the move on their own,
+/// because everything is still measured inside the view that moved.
+- (void)liftPictureBy:(CGFloat)points {
+    if (fabs(points - pictureLift) < 1) {
+        return;
+    }
+    pictureLift = points;
+
+    UIView *moved = [self.superview isKindOfClass:[UIScrollView class]] ? self.superview : self;
+    [UIView animateWithDuration:0.2 animations:^{
+        moved.transform = CGAffineTransformMakeTranslation(0, -points);
+    }];
 }
 
 /// How much black there is down each side of the picture, or zero if there is not enough to
@@ -638,6 +712,9 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
 /// Skipping the release would leave the host with a modifier stuck down, and every
 /// subsequent keystroke would silently arrive modified.
 - (void)dismissKeyBar {
+    [caretTracker stop];
+    caretTracker = nil;
+    [self liftPictureBy:0];
     [self teardownKeyboardBar];
     [macroPad removeFromSuperview];
     macroPad = nil;
