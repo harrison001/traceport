@@ -40,6 +40,7 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     CaretTracker* caretTracker;
     /// How far the picture is currently lifted to clear the keyboard.
     CGFloat pictureLift;
+    BOOL caretLogged;
     BOOL systemKeyboardVisible;
     /// Identifies the host, so its operating system is remembered per machine.
     NSString* hostKey;
@@ -516,6 +517,7 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
         return;
     }
 
+    caretLogged = NO;
     caretTracker = [[CaretTracker alloc] initWithHost:hostKey];
     __weak StreamView *weakSelf = self;
     caretTracker.onCaret = ^(CGRect normalisedCaret) {
@@ -544,6 +546,12 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     if (@available(iOS 15.0, *)) {
         keyboardTop = self.keyboardLayoutGuide.layoutFrame.origin.y;
     }
+    // Measured against where the keyboard is with the picture unlifted. The guide reports in
+    // this view's own coordinates, so once the picture has been moved up the keyboard appears
+    // that much further down in them — feeding that straight back in makes the lift alternate
+    // between two values instead of settling on one.
+    keyboardTop -= pictureLift;
+
     if (keyboardTop <= 0 || keyboardTop >= self.bounds.size.height) {
         [self liftPictureBy:0];
         return;
@@ -552,7 +560,13 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     // A line of clearance, so the caret is not sitting exactly on the keyboard's edge.
     CGFloat margin = normalisedCaret.size.height * video.height + 8;
     CGFloat needed = caretBottom + margin - keyboardTop;
-    [self liftPictureBy:MAX(0, MIN(needed, videoTop + video.height))];
+    CGFloat lift = MAX(0, MIN(needed, videoTop + video.height));
+    if (!caretLogged) {
+        caretLogged = YES;
+        Log(LOG_I, @"Caret at %.3f,%.3f -> bottom %.0fpt, keyboard top %.0fpt, lift %.0fpt",
+            normalisedCaret.origin.x, normalisedCaret.origin.y, caretBottom, keyboardTop, lift);
+    }
+    [self liftPictureBy:lift];
 }
 
 /// Moves the picture up without touching the stream view's own transform, which the scroll view

@@ -4,6 +4,8 @@
 //
 
 #import "CaretTracker.h"
+#import "Utils.h"
+#include <Limelight.h>
 
 /// Often enough that the picture keeps up with a moving caret, rarely enough that the request
 /// costs nothing next to the video stream sharing the same link.
@@ -19,6 +21,7 @@ static const NSInteger sunshineHttpPort = 47989;
     NSURLSession *_session;
     NSTimer *_timer;
     BOOL _inFlight;
+    BOOL _loggedURL;
 }
 
 - (instancetype)initWithHost:(NSString *)host {
@@ -64,7 +67,9 @@ static const NSInteger sunshineHttpPort = 47989;
         return;  // the host is slower than the poll interval; do not stack requests on it
     }
 
-    NSString *address = _host;
+    // What the stream was configured with is an address and a port together, and the port on it
+    // is the streaming one rather than this. Strip it the way the rest of the app does.
+    NSString *address = [Utils addressPortStringToAddress:_host];
     // An IPv6 literal has to be bracketed in a URL, and Tailscale hands these out.
     if ([address containsString:@":"] && ![address hasPrefix:@"["]) {
         address = [NSString stringWithFormat:@"[%@]", address];
@@ -74,6 +79,11 @@ static const NSInteger sunshineHttpPort = 47989;
                                        address, (long)sunshineHttpPort]];
     if (url == nil) {
         return;
+    }
+
+    if (!_loggedURL) {
+        _loggedURL = YES;
+        Log(LOG_I, @"Caret tracking: %@", url.absoluteString);
     }
 
     _inFlight = YES;
