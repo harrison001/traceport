@@ -89,7 +89,8 @@ static const NSInteger sunshineHttpPort = 47989;
     _inFlight = YES;
     __weak CaretTracker *weakSelf = self;
     [[_session dataTaskWithURL:url completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
-        CGRect caret = [CaretTracker parse:data];
+        BOOL precise = NO;
+        CGRect caret = [CaretTracker parse:data precise:&precise];
         dispatch_async(dispatch_get_main_queue(), ^{
             CaretTracker *strongSelf = weakSelf;
             if (strongSelf == nil) {
@@ -99,7 +100,7 @@ static const NSInteger sunshineHttpPort = 47989;
             // Only report while still running: an answer that arrives after the keyboard has
             // gone would move the picture for no reason.
             if (strongSelf->_timer != nil && strongSelf.onCaret != nil) {
-                strongSelf.onCaret(caret);
+                strongSelf.onCaret(caret, precise);
             }
         });
     }] resume];
@@ -107,7 +108,7 @@ static const NSInteger sunshineHttpPort = 47989;
 
 /// The body is either {} or the four fractions. Small enough to read directly rather than
 /// pulling in a parser.
-+ (CGRect)parse:(NSData *)data {
++ (CGRect)parse:(NSData *)data precise:(BOOL *)precise {
     if (data.length == 0) {
         return CGRectNull;
     }
@@ -122,6 +123,7 @@ static const NSInteger sunshineHttpPort = 47989;
     if (x == nil || y == nil) {
         return CGRectNull;  // {} — this application does not say where its caret is
     }
+    *precise = [fields[@"source"] isEqualToString:@"caret"];
     return CGRectMake(x.doubleValue,
                       y.doubleValue,
                       [fields[@"w"] doubleValue],

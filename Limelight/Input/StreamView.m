@@ -520,8 +520,8 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     caretLogged = NO;
     caretTracker = [[CaretTracker alloc] initWithHost:hostKey];
     __weak StreamView *weakSelf = self;
-    caretTracker.onCaret = ^(CGRect normalisedCaret) {
-        [weakSelf caretMovedTo:normalisedCaret];
+    caretTracker.onCaret = ^(CGRect normalisedCaret, BOOL precise) {
+        [weakSelf caretMovedTo:normalisedCaret precise:precise];
     };
     [caretTracker start];
 }
@@ -532,15 +532,18 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
 /// drawn without the client knowing anything about resolutions. A caret the host cannot report
 /// leaves the picture where it is rather than guessing — half the applications do not report
 /// one, and a picture that jumps to the wrong place is worse than one that does not move.
-- (void)caretMovedTo:(CGRect)normalisedCaret {
+- (void)caretMovedTo:(CGRect)normalisedCaret precise:(BOOL)precise {
     if (CGRectIsNull(normalisedCaret)) {
         return;
     }
 
     CGSize video = [self getVideoAreaSize];
     CGFloat videoTop = (self.bounds.size.height - video.height) / 2;
-    // The bottom of the caret line, in the picture's own coordinates before any lift.
-    CGFloat caretBottom = videoTop + (normalisedCaret.origin.y + normalisedCaret.size.height) * video.height;
+
+    // The pointer standing in for a caret has no height, and clearing a bare point by eight
+    // points leaves the line it sits on still under the keyboard. Give it a line's worth.
+    CGFloat height = normalisedCaret.size.height > 0 ? normalisedCaret.size.height : 0.025;
+    CGFloat caretBottom = videoTop + (normalisedCaret.origin.y + height) * video.height;
 
     // Measured on a view that does not move. Reading the keyboard from this view means reading
     // it through the very transform the reading decides, and any such loop settles somewhere
@@ -559,12 +562,13 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     }
 
     // A line of clearance, so the caret is not sitting exactly on the keyboard's edge.
-    CGFloat margin = normalisedCaret.size.height * video.height + 8;
+    CGFloat margin = height * video.height + 8;
     CGFloat needed = caretBottom + margin - keyboardTop;
     CGFloat lift = MAX(0, MIN(needed, videoTop + video.height));
     if (!caretLogged) {
         caretLogged = YES;
-        Log(LOG_I, @"Caret at %.3f,%.3f -> bottom %.0fpt, keyboard top %.0fpt, lift %.0fpt",
+        Log(LOG_I, @"%@ at %.3f,%.3f -> bottom %.0fpt, keyboard top %.0fpt, lift %.0fpt",
+            precise ? @"Caret" : @"Pointer",
             normalisedCaret.origin.x, normalisedCaret.origin.y, caretBottom, keyboardTop, lift);
     }
     [self liftPictureBy:lift];

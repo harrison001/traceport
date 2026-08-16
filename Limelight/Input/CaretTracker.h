@@ -27,8 +27,13 @@ NS_ASSUME_NONNULL_BEGIN
 /// Called on the main thread whenever an answer arrives.
 ///
 /// The rectangle is in fractions of the streamed display: multiply by the video area to get
-/// points. CGRectNull means the focused application does not report an insertion point.
-@property (nonatomic, copy, nullable) void (^onCaret)(CGRect normalisedCaret);
+/// points. CGRectNull means the host had nothing to offer at all.
+///
+/// `precise` says whether this is the focused application's insertion point or the pointer
+/// standing in for it. The pointer is where you clicked to start typing, which is close enough
+/// to be worth moving the picture for, and in trackpad mode it is the only thing the client
+/// cannot work out for itself — but it has no height, so the caller has to supply one.
+@property (nonatomic, copy, nullable) void (^onCaret)(CGRect normalisedCaret, BOOL precise);
 
 - (void)start;
 - (void)stop;
