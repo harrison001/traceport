@@ -8,18 +8,6 @@
 #import "KeyboardSupport.h"
 #include <Limelight.h>
 
-/// How a key behaves when tapped.
-typedef NS_ENUM(NSInteger, KeyBarKeyKind) {
-    /// Sends down and up, and consumes any one-shot modifiers.
-    KeyBarKeyKindNormal,
-    /// Cycles off -> one-shot -> locked -> off.
-    KeyBarKeyKindModifier,
-    /// Dismisses the bar.
-    KeyBarKeyKindDismiss,
-    /// Shows or hides the system keyboard, leaving the bar in place.
-    KeyBarKeyKindKeyboardToggle,
-};
-
 /// What a modifier is currently doing.
 typedef NS_ENUM(NSInteger, KeyBarModifierState) {
     KeyBarModifierStateOff,
@@ -29,7 +17,7 @@ typedef NS_ENUM(NSInteger, KeyBarModifierState) {
     KeyBarModifierStateLocked,
 };
 
-/// Time in microseconds a normal key is held before being released.
+/// Time in microseconds a key is held before being released.
 static const useconds_t keyPressHoldTime = 50 * 1000;
 
 /// Key metrics, measured from RealVNC Viewer on the same two devices (2026-08-15).
@@ -51,9 +39,7 @@ static const CGFloat rowVerticalInset = 8;
 static const CGFloat rowHorizontalInset = 12;
 
 @interface KeyBarButton : UIButton
-@property (nonatomic, assign) KeyBarKeyKind kind;
-@property (nonatomic, assign) short virtualKey;
-@property (nonatomic, assign) char modifierMask;
+@property (nonatomic, strong) KeyItem *item;
 @property (nonatomic, assign) KeyBarModifierState modifierState;
 @end
 
@@ -74,7 +60,7 @@ static UIColor *KeyBarBackgroundColor(void) {
     return KeyBarColor(0.87, 0.14);
 }
 
-/// Normal keys read as the white keys on RealVNC's bar.
+/// Ordinary keys read as the white keys on RealVNC's bar.
 static UIColor *KeyBarNormalKeyColor(void) {
     return KeyBarColor(1.00, 0.38);
 }
@@ -85,11 +71,22 @@ static UIColor *KeyBarModifierKeyColor(void) {
 }
 
 @implementation KeyBarView {
-    /// Scrolls: the keys themselves.
+    /// Scrolls: the current page.
     UIStackView *_row;
-    /// Does not scroll: the controls, which must stay reachable however far the keys scroll.
+    /// Does not scroll: page control and the two dismissal controls.
     UIStackView *_controls;
+
+    NSArray<KeyPage *> *_pages;
+    NSUInteger _pageIndex;
+
+    /// Modifier buttons on the current page. Rebuilt with the page, but the held state that
+    /// matters lives on the host, so it is re-applied rather than reset.
     NSMutableArray<KeyBarButton *> *_modifierButtons;
+    /// Which modifier flags are held, so a page change does not silently drop them.
+    UIKeyModifierFlags _heldOneShot;
+    UIKeyModifierFlags _heldLocked;
+
+    KeyBarButton *_pageButton;
     KeyBarButton *_keyboardToggle;
 }
 
@@ -122,13 +119,15 @@ static UIColor *KeyBarModifierKeyColor(void) {
     }
 
     _modifierButtons = [NSMutableArray array];
+    _pages = [KeyMacros pagesForHost:[KeyMacros defaultHost]];
+    _pageIndex = 0;
 
     self.backgroundColor = KeyBarBackgroundColor();
 
     UIScrollView *scrollView = [[UIScrollView alloc] initWithFrame:CGRectZero];
     scrollView.translatesAutoresizingMaskIntoConstraints = NO;
     scrollView.showsHorizontalScrollIndicator = NO;
-    // The bar is short and the keys are small; bouncing makes it feel loose.
+    // The bar is short; bouncing makes it feel loose.
     scrollView.alwaysBounceHorizontal = NO;
     [self addSubview:scrollView];
 
@@ -141,8 +140,8 @@ static UIColor *KeyBarModifierKeyColor(void) {
                                           rowVerticalInset, rowHorizontalInset);
     [scrollView addSubview:_row];
 
-    // Controls live outside the scroll view. With thirty-odd keys, anything inside it can end
-    // up several swipes away, and dismissing the bar should never require hunting for the key.
+    // Controls live outside the scroll view. Dismissing the bar or changing page should never
+    // require scrolling to find the key.
     _controls = [[UIStackView alloc] initWithFrame:CGRectZero];
     _controls.translatesAutoresizingMaskIntoConstraints = NO;
     _controls.axis = UILayoutConstraintAxisHorizontal;
@@ -169,12 +168,13 @@ static UIColor *KeyBarModifierKeyColor(void) {
         [_row.heightAnchor constraintEqualToAnchor:scrollView.frameLayoutGuide.heightAnchor],
     ]];
 
-    // The keys must yield to the controls, never the other way round.
+    // The page must yield to the controls, never the other way round.
     [_controls setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
     [_controls setContentCompressionResistancePriority:UILayoutPriorityRequired
                                                forAxis:UILayoutConstraintAxisHorizontal];
 
-    [self populateKeys];
+    [self buildControls];
+    [self showPage:0];
 
     // The caller may have sized us before the keys existed; take the height we actually need.
     CGRect bounds = self.frame;
@@ -189,139 +189,105 @@ static UIColor *KeyBarModifierKeyColor(void) {
     return CGSizeMake(UIViewNoIntrinsicMetric, [KeyBarView barHeight]);
 }
 
-/// Win32 virtual key codes, matching what the rest of the client sends.
+#pragma mark - Pages
+
+/// Rebuilds the scrolling area for one page.
 ///
-/// Ordered in groups separated by a wide gap, the way RealVNC does it: modifiers, then
-/// editing keys, then the arrows. The separation is what makes a group findable at a glance,
-/// without reading any of the labels.
-- (void)populateKeys {
-    BOOL macHost = [KeyMacros defaultHost] == KeyMacroHostMacOS;
+/// Modifiers and the clipboard appear on nearly every page on purpose: paging only costs a
+/// tap for what is not already in front of you, so the items used constantly are on all of
+/// them and never cost anything.
+- (void)showPage:(NSUInteger)index {
+    _pageIndex = index % _pages.count;
+    KeyPage *page = _pages[_pageIndex];
 
-    // RealVNC offers Command and the Windows key side by side, because it cannot know which
-    // host it is driving either. Showing both is the cognitive cost of not knowing; we show
-    // the one that belongs to the host instead.
-    [self addKeyWithTitle:@"⇧" kind:KeyBarKeyKindModifier virtualKey:0xA0 modifierMask:MODIFIER_SHIFT];
-    [self addKeyWithTitle:@"⌃" kind:KeyBarKeyKindModifier virtualKey:0xA2 modifierMask:MODIFIER_CTRL];
-    [self addKeyWithTitle:macHost ? @"⌥" : @"alt" kind:KeyBarKeyKindModifier virtualKey:0xA4 modifierMask:MODIFIER_ALT];
-    [self addKeyWithTitle:macHost ? @"⌘" : @"⊞" kind:KeyBarKeyKindModifier virtualKey:0x5B modifierMask:MODIFIER_META];
+    for (UIView *view in _row.arrangedSubviews) {
+        [view removeFromSuperview];
+    }
+    [_modifierButtons removeAllObjects];
 
-    [self addGroupSeparator];
+    BOOL first = YES;
+    for (KeyGroup *group in page.groups) {
+        if (!first) {
+            [self addGroupSeparator];
+        }
+        first = NO;
 
-    // Clipboard chords earn a place on the bar itself: one tap instead of arming a modifier
-    // and then finding the letter, and they sit in the first screenful so no scroll is needed.
-    for (KeyMacro *macro in [KeyMacros macrosForHost:[KeyMacros defaultHost]]) {
-        if (macro.primary) {
-            [self addMacroKey:macro];
+        for (KeyItem *item in group.items) {
+            [self addItem:item];
         }
     }
 
-    [self addGroupSeparator];
+    [_pageButton setTitle:page.name forState:UIControlStateNormal];
+    [self restoreModifierAppearance];
+}
 
-    [self addKeyWithTitle:@"esc" kind:KeyBarKeyKindNormal virtualKey:0x1B modifierMask:0];
-    [self addKeyWithTitle:@"tab" kind:KeyBarKeyKindNormal virtualKey:0x09 modifierMask:0];
-    [self addKeyWithTitle:@"⌦" kind:KeyBarKeyKindNormal virtualKey:0x2E modifierMask:0];
-    [self addKeyWithTitle:@"ins" kind:KeyBarKeyKindNormal virtualKey:0x2D modifierMask:0];
-    [self addKeyWithTitle:@"↵" kind:KeyBarKeyKindNormal virtualKey:0x0D modifierMask:0];
+- (void)nextPage {
+    [self showPage:_pageIndex + 1];
+}
 
-    [self addGroupSeparator];
-
-    // Requested in moonlight-ios#650, and present in every client surveyed.
-    [self addKeyWithTitle:@"←" kind:KeyBarKeyKindNormal virtualKey:0x25 modifierMask:0];
-    [self addKeyWithTitle:@"↓" kind:KeyBarKeyKindNormal virtualKey:0x28 modifierMask:0];
-    [self addKeyWithTitle:@"↑" kind:KeyBarKeyKindNormal virtualKey:0x26 modifierMask:0];
-    [self addKeyWithTitle:@"→" kind:KeyBarKeyKindNormal virtualKey:0x27 modifierMask:0];
-
-    [self addGroupSeparator];
-
-    [self addKeyWithTitle:@"↖" kind:KeyBarKeyKindNormal virtualKey:0x24 modifierMask:0];
-    [self addKeyWithTitle:@"↘" kind:KeyBarKeyKindNormal virtualKey:0x23 modifierMask:0];
-    [self addKeyWithTitle:@"⇞" kind:KeyBarKeyKindNormal virtualKey:0x21 modifierMask:0];
-    [self addKeyWithTitle:@"⇟" kind:KeyBarKeyKindNormal virtualKey:0x22 modifierMask:0];
-
-    [self addGroupSeparator];
-
-    // VK_F1 through VK_F12 are consecutive from 0x70.
-    for (short i = 0; i < 12; i++) {
-        [self addKeyWithTitle:[NSString stringWithFormat:@"F%d", i + 1]
-                         kind:KeyBarKeyKindNormal
-                   virtualKey:0x70 + i
-                 modifierMask:0];
+/// A page change rebuilds the buttons, but the host still has whatever was held down. Put the
+/// new buttons back into that state rather than letting the display disagree with the host.
+- (void)restoreModifierAppearance {
+    for (KeyBarButton *button in _modifierButtons) {
+        UIKeyModifierFlags flag = button.item.modifiers;
+        if (_heldLocked & flag) {
+            button.modifierState = KeyBarModifierStateLocked;
+        } else if (_heldOneShot & flag) {
+            button.modifierState = KeyBarModifierStateOneShot;
+        } else {
+            button.modifierState = KeyBarModifierStateOff;
+        }
+        [self applyAppearance:button];
     }
-
-    [self addGroupSeparator];
-
-    [self addKeyWithTitle:@"Pause" kind:KeyBarKeyKindNormal virtualKey:0x13 modifierMask:0];
-    [self addKeyWithTitle:@"Break" kind:KeyBarKeyKindNormal virtualKey:0x03 modifierMask:0];
-
-    [self populateControls];
 }
 
-/// The three controls that never scroll away.
-- (void)populateControls {
-    [self addMacroButton];
-    _keyboardToggle = [self addKeyWithTitle:@"⌨" kind:KeyBarKeyKindKeyboardToggle
-                                 virtualKey:0 modifierMask:0 toStack:_controls];
-    [self addKeyWithTitle:@"Done" kind:KeyBarKeyKindDismiss
-               virtualKey:0 modifierMask:0 toStack:_controls];
+#pragma mark - Building
+
+- (void)buildControls {
+    _pageButton = [self buttonWithTitle:@"Keys" wide:YES];
+    [_pageButton addTarget:self action:@selector(pageButtonPressed) forControlEvents:UIControlEventTouchUpInside];
+    [_controls addArrangedSubview:_pageButton];
+
+    _keyboardToggle = [self buttonWithTitle:@"⌨" wide:NO];
+    [_keyboardToggle addTarget:self action:@selector(keyboardTogglePressed) forControlEvents:UIControlEventTouchUpInside];
+    [_controls addArrangedSubview:_keyboardToggle];
+
+    KeyBarButton *done = [self buttonWithTitle:@"Done" wide:YES];
+    [done addTarget:self action:@selector(donePressed) forControlEvents:UIControlEventTouchUpInside];
+    [_controls addArrangedSubview:done];
 }
 
-- (void)setSystemKeyboardVisible:(BOOL)visible {
-    // Struck through when tapping it would bring the keyboard back.
-    [_keyboardToggle setTitle:visible ? @"⌨" : @"⌨̶" forState:UIControlStateNormal];
-    _keyboardToggle.backgroundColor = visible ? KeyBarNormalKeyColor() : KeyBarModifierKeyColor();
-}
-
-/// One button opening a menu of named actions, rather than a dozen more keys.
-///
-/// This is TeamViewer's shape, and it is the only way to reach chords whose other half lives
-/// on the system keyboard — Command-Space cannot be assembled from this bar at all when a
-/// hardware keyboard is attached and the system keyboard is therefore not shown.
-- (void)addMacroButton {
+- (KeyBarButton *)buttonWithTitle:(NSString *)title wide:(BOOL)wide {
     KeyBarButton *button = [KeyBarButton buttonWithType:UIButtonTypeSystem];
-    button.kind = KeyBarKeyKindNormal;
-    [button setTitle:@"⋯" forState:UIControlStateNormal];
-    button.titleLabel.font = [UIFont systemFontOfSize:[KeyBarView isPad] ? 22 : 19
+    [button setTitle:title forState:UIControlStateNormal];
+    button.titleLabel.font = [UIFont systemFontOfSize:[KeyBarView isPad] ? 19 : 16
                                                weight:UIFontWeightMedium];
+    button.titleLabel.adjustsFontSizeToFitWidth = YES;
+    button.titleLabel.minimumScaleFactor = 0.8;
     button.layer.cornerRadius = 8;
+    button.contentEdgeInsets = UIEdgeInsetsMake(0, 8, 0, 8);
     button.backgroundColor = KeyBarNormalKeyColor();
     button.tintColor = [UIColor labelColor];
+
     [button.heightAnchor constraintEqualToConstant:[KeyBarView keyHeight]].active = YES;
-    [button.widthAnchor constraintEqualToConstant:[KeyBarView keyWidth]].active = YES;
+    CGFloat width = [KeyBarView keyWidth] * (wide ? 1.3 : 1.0);
+    [button.widthAnchor constraintGreaterThanOrEqualToConstant:width].active = YES;
 
-    NSMutableArray<UIAction *> *actions = [NSMutableArray array];
-    for (KeyMacro *macro in [KeyMacros macrosForHost:[KeyMacros defaultHost]]) {
-        UIAction *action = [UIAction actionWithTitle:macro.help
-                                               image:nil
-                                          identifier:nil
-                                             handler:^(__kindof UIAction *_Nonnull sender) {
-            [KeyboardSupport sendChordWithVirtualKey:macro.virtualKey modifierFlags:macro.modifiers];
-        }];
-        action.subtitle = macro.label;
-        [actions addObject:action];
-    }
-
-    button.menu = [UIMenu menuWithTitle:@"" children:actions];
-    button.showsMenuAsPrimaryAction = YES;
-
-    [_row addArrangedSubview:button];
+    return button;
 }
 
-/// A whole chord on one key, sent as a unit rather than assembled from the bar.
-- (void)addMacroKey:(KeyMacro *)macro {
-    KeyBarButton *button = [self addKeyWithTitle:macro.label
-                                            kind:KeyBarKeyKindNormal
-                                      virtualKey:macro.virtualKey
-                                    modifierMask:0
-                                         toStack:_row];
+- (void)addItem:(KeyItem *)item {
+    KeyBarButton *button = [self buttonWithTitle:item.label wide:item.label.length > 3];
+    button.item = item;
+    button.modifierState = KeyBarModifierStateOff;
+    [button addTarget:self action:@selector(itemPressed:) forControlEvents:UIControlEventTouchUpInside];
 
-    // Its own modifiers, not the bar's: pressing Copy should not also apply a locked Shift.
-    [button removeTarget:self action:@selector(keyPressed:) forControlEvents:UIControlEventTouchUpInside];
-    UIKeyModifierFlags modifiers = macro.modifiers;
-    short virtualKey = macro.virtualKey;
-    UIAction *send = [UIAction actionWithHandler:^(__kindof UIAction *_Nonnull action) {
-        [KeyboardSupport sendChordWithVirtualKey:virtualKey modifierFlags:modifiers];
-    }];
-    [button addAction:send forControlEvents:UIControlEventTouchUpInside];
+    if (item.kind == KeyItemKindModifier) {
+        [_modifierButtons addObject:button];
+    }
+
+    [self applyAppearance:button];
+    [_row addArrangedSubview:button];
 }
 
 /// A wide gap between groups. Implemented as an empty view because UIStackView applies its
@@ -333,57 +299,12 @@ static UIColor *KeyBarModifierKeyColor(void) {
     [_row addArrangedSubview:spacer];
 }
 
-- (KeyBarButton *)addKeyWithTitle:(NSString *)title
-                             kind:(KeyBarKeyKind)kind
-                       virtualKey:(short)virtualKey
-                     modifierMask:(char)modifierMask {
-    return [self addKeyWithTitle:title kind:kind virtualKey:virtualKey modifierMask:modifierMask toStack:_row];
-}
-
-- (KeyBarButton *)addKeyWithTitle:(NSString *)title
-                             kind:(KeyBarKeyKind)kind
-                       virtualKey:(short)virtualKey
-                     modifierMask:(char)modifierMask
-                          toStack:(UIStackView *)stack {
-    KeyBarButton *button = [KeyBarButton buttonWithType:UIButtonTypeSystem];
-    button.kind = kind;
-    button.virtualKey = virtualKey;
-    button.modifierMask = modifierMask;
-    button.modifierState = KeyBarModifierStateOff;
-
-    [button setTitle:title forState:UIControlStateNormal];
-    button.titleLabel.font = [UIFont systemFontOfSize:[KeyBarView isPad] ? 20 : 17
-                                               weight:UIFontWeightMedium];
-    button.layer.cornerRadius = 8;
-    button.contentEdgeInsets = UIEdgeInsetsMake(0, 6, 0, 6);
-
-    // Uniform width, as RealVNC does: a regular grid is easier to hit than keys that vary
-    // with the length of their label. Wider only where the label genuinely needs it.
-    CGFloat width = [KeyBarView keyWidth];
-    if (title.length > 3) {
-        width = MAX(width, [KeyBarView keyWidth] * 1.4);
-    }
-    [button.heightAnchor constraintEqualToConstant:[KeyBarView keyHeight]].active = YES;
-    [button.widthAnchor constraintEqualToConstant:width].active = YES;
-
-    [button addTarget:self action:@selector(keyPressed:) forControlEvents:UIControlEventTouchUpInside];
-
-    if (kind == KeyBarKeyKindModifier) {
-        [_modifierButtons addObject:button];
-    }
-
-    [self applyAppearance:button];
-    [stack addArrangedSubview:button];
-
-    return button;
-}
-
 - (void)applyAppearance:(KeyBarButton *)button {
     switch (button.modifierState) {
         case KeyBarModifierStateOff:
             // Resting colour encodes the kind of key, as RealVNC does: modifiers read as grey
             // and everything else as white, so the bar is scannable by shade alone.
-            button.backgroundColor = button.kind == KeyBarKeyKindModifier
+            button.backgroundColor = button.item.kind == KeyItemKindModifier
                 ? KeyBarModifierKeyColor()
                 : KeyBarNormalKeyColor();
             button.layer.borderWidth = 0;
@@ -406,23 +327,24 @@ static UIColor *KeyBarModifierKeyColor(void) {
         : [UIColor whiteColor];
 }
 
-- (void)keyPressed:(KeyBarButton *)button {
-    switch (button.kind) {
-        case KeyBarKeyKindDismiss:
-            [self.delegate keyBarDidRequestDismiss];
-            return;
+#pragma mark - Input
 
-        case KeyBarKeyKindKeyboardToggle:
-            [self.delegate keyBarDidToggleSystemKeyboard];
-            return;
-
-        case KeyBarKeyKindModifier:
+- (void)itemPressed:(KeyBarButton *)button {
+    switch (button.item.kind) {
+        case KeyItemKindModifier:
             [self advanceModifier:button];
             return;
 
-        case KeyBarKeyKindNormal:
-            [self sendKey:button.virtualKey];
+        case KeyItemKindKey:
+            [self sendKey:button.item.virtualKey];
             [self consumeOneShotModifiers];
+            return;
+
+        case KeyItemKindMacro:
+            // A macro carries its own modifiers, so Copy sends exactly Command-C even while
+            // something else is locked down for another purpose.
+            [KeyboardSupport sendChordWithVirtualKey:button.item.virtualKey
+                                       modifierFlags:button.item.modifiers];
             return;
     }
 }
@@ -430,24 +352,29 @@ static UIColor *KeyBarModifierKeyColor(void) {
 /// off -> one-shot -> locked -> off.
 ///
 /// Deliberately a state machine rather than a double-tap gesture: recognising a double tap
-/// delays every single tap by the double-tap interval, which is unacceptable for a keyboard.
-/// Tapping twice in a row still reaches the locked state, so it behaves the way a user
-/// expects "double tap to lock" to behave, without the latency.
+/// delays every single tap by the double-tap interval, which no keyboard can afford. Tapping
+/// twice still reaches the locked state, so it behaves the way "double tap to lock" implies.
 - (void)advanceModifier:(KeyBarButton *)button {
+    UIKeyModifierFlags flag = button.item.modifiers;
+
     switch (button.modifierState) {
         case KeyBarModifierStateOff:
             button.modifierState = KeyBarModifierStateOneShot;
-            LiSendKeyboardEvent(button.virtualKey, KEY_ACTION_DOWN, [self activeModifierMask]);
+            _heldOneShot |= flag;
+            LiSendKeyboardEvent(button.item.virtualKey, KEY_ACTION_DOWN, [self activeModifierMask]);
             break;
 
         case KeyBarModifierStateOneShot:
             // Already held on the host; only our intent changes.
             button.modifierState = KeyBarModifierStateLocked;
+            _heldOneShot &= ~flag;
+            _heldLocked |= flag;
             break;
 
         case KeyBarModifierStateLocked:
             button.modifierState = KeyBarModifierStateOff;
-            LiSendKeyboardEvent(button.virtualKey, KEY_ACTION_UP, [self activeModifierMask]);
+            _heldLocked &= ~flag;
+            LiSendKeyboardEvent(button.item.virtualKey, KEY_ACTION_UP, [self activeModifierMask]);
             break;
     }
 
@@ -455,11 +382,19 @@ static UIColor *KeyBarModifierKeyColor(void) {
 }
 
 - (char)activeModifierMask {
+    UIKeyModifierFlags held = _heldOneShot | _heldLocked;
     char mask = 0;
-    for (KeyBarButton *button in _modifierButtons) {
-        if (button.modifierState != KeyBarModifierStateOff) {
-            mask |= button.modifierMask;
-        }
+    if (held & UIKeyModifierShift) {
+        mask |= MODIFIER_SHIFT;
+    }
+    if (held & UIKeyModifierControl) {
+        mask |= MODIFIER_CTRL;
+    }
+    if (held & UIKeyModifierAlternate) {
+        mask |= MODIFIER_ALT;
+    }
+    if (held & UIKeyModifierCommand) {
+        mask |= MODIFIER_META;
     }
     return mask;
 }
@@ -475,10 +410,15 @@ static UIColor *KeyBarModifierKeyColor(void) {
 
 /// Releases the modifiers that were armed for a single key. Locked ones stay down.
 - (void)consumeOneShotModifiers {
+    if (_heldOneShot == 0) {
+        return;
+    }
+
     for (KeyBarButton *button in _modifierButtons) {
         if (button.modifierState == KeyBarModifierStateOneShot) {
             button.modifierState = KeyBarModifierStateOff;
-            LiSendKeyboardEvent(button.virtualKey, KEY_ACTION_UP, [self activeModifierMask]);
+            _heldOneShot &= ~button.item.modifiers;
+            LiSendKeyboardEvent(button.item.virtualKey, KEY_ACTION_UP, [self activeModifierMask]);
             [self applyAppearance:button];
         }
     }
@@ -488,10 +428,30 @@ static UIColor *KeyBarModifierKeyColor(void) {
     for (KeyBarButton *button in _modifierButtons) {
         if (button.modifierState != KeyBarModifierStateOff) {
             button.modifierState = KeyBarModifierStateOff;
-            LiSendKeyboardEvent(button.virtualKey, KEY_ACTION_UP, 0);
+            LiSendKeyboardEvent(button.item.virtualKey, KEY_ACTION_UP, 0);
             [self applyAppearance:button];
         }
     }
+    _heldOneShot = 0;
+    _heldLocked = 0;
+}
+
+#pragma mark - Controls
+
+- (void)pageButtonPressed {
+    [self nextPage];
+}
+
+- (void)keyboardTogglePressed {
+    [self.delegate keyBarDidToggleSystemKeyboard];
+}
+
+- (void)donePressed {
+    [self.delegate keyBarDidRequestDismiss];
+}
+
+- (void)setSystemKeyboardVisible:(BOOL)visible {
+    _keyboardToggle.backgroundColor = visible ? KeyBarNormalKeyColor() : KeyBarModifierKeyColor();
 }
 
 @end
