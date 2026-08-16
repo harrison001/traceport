@@ -8,6 +8,16 @@
 #import "KeyboardSupport.h"
 #include <Limelight.h>
 
+/// Which commit this binary was built from, injected by the build command.
+///
+/// Installing an app does not replace the copy already running, and there is no way to see
+/// from the outside which one a phone is executing. Twice now a change has been reported as
+/// missing when the question was really "is this even the new build". One line in the ⋯ menu
+/// answers it in a second.
+#ifndef KEYBAR_BUILD_ID
+#define KEYBAR_BUILD_ID "dev"
+#endif
+
 /// What a modifier is currently doing.
 typedef NS_ENUM(NSInteger, KeyBarModifierState) {
     KeyBarModifierStateOff,
@@ -997,7 +1007,17 @@ typedef NS_ENUM(NSInteger, KeyBarLayout) {
         [actions addObject:action];
     }
 
-    return [UIMenu menuWithTitle:@"Host runs" children:actions];
+    UIAction *build = [UIAction actionWithTitle:@"build " @KEYBAR_BUILD_ID
+                                          image:nil
+                                     identifier:nil
+                                        handler:^(__kindof UIAction *sender) {}];
+    build.attributes = UIMenuElementAttributesDisabled;
+
+    return [UIMenu menuWithTitle:@"Host runs"
+                        children:[actions arrayByAddingObject:
+                                  [UIMenu menuWithTitle:@"" image:nil identifier:nil
+                                                options:UIMenuOptionsDisplayInline
+                                               children:@[build]]]];
 }
 
 /// Anything held is released first: the keys about to be replaced are the ones the host has
