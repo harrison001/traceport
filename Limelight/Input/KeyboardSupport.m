@@ -448,6 +448,9 @@
     event->modifierKeycode = 0x12;
 }
 
+/// How long to wait after pressing a modifier before sending the key it modifies.
+static const useconds_t modifierSettleTime = 30 * 1000;
+
 + (void)sendChordWithVirtualKey:(short)keyCode modifierFlags:(UIKeyModifierFlags)modifierFlags {
     // Win32 virtual key codes for the modifier keys themselves.
     static const short shiftVirtualKey = 0x10;
