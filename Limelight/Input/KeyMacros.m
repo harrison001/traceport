@@ -212,13 +212,12 @@
 /// one-shot modifier is consumed by the next bar key and the letter comes from the system
 /// keyboard instead.
 ///
-/// The prefix is Control-A here rather than tmux's default Control-B, which is what Harrison
-/// binds. Anyone with the default can hide this page and pin their own.
+/// Kept to what Harrison actually drives: zoom a pane, one toggle, and moving the focus
+/// between panes. tmux has dozens of bindings and none of the rest were being used.
+///
+/// The prefix is Control-A rather than tmux's default Control-B, which is what he binds.
 + (KeyPage *)tmuxPageForHost:(KeyMacroHost)host {
-    UIKeyModifierFlags prefixFlags = UIKeyModifierControl;
-    short prefixKey = 0x41;  // A
-
-    KeyStep *prefix = [KeyStep step:prefixKey modifiers:prefixFlags];
+    KeyStep *prefix = [KeyStep step:0x41 modifiers:UIKeyModifierControl];  // Control-A
     KeyItem *(^command)(NSString *, short) = ^KeyItem *(NSString *label, short key) {
         return [KeyItem sequence:label steps:@[prefix, [KeyStep step:key modifiers:0]]];
     };
@@ -226,27 +225,15 @@
     return [KeyPage pageNamed:@"tmux" groups:@[
         [self modifiersForHost:host],
         [KeyGroup groupWithItems:@[
-            // Window selection: prefix then the digit.
-            command(@"W1", 0x31),
-            command(@"W2", 0x32),
-            command(@"W3", 0x33),
-            command(@"W4", 0x34),
-        ]],
-        [KeyGroup groupWithItems:@[
-            command(@"Next", 0x4E),
-            command(@"Prev", 0x50),
-            command(@"Last", 0x4C),
-        ]],
-        [KeyGroup groupWithItems:@[
             command(@"Zoom", 0x5A),
-            command(@"Split ⇅", 0xDE),   // quote, tmux's horizontal split
-            command(@"Split ⇄", 0x35),   // percent, shift-5
-            command(@"Kill", 0x58),
+            command(@"⌃A b", 0x42),
         ]],
+        // Prefix then an arrow moves the focus between panes.
         [KeyGroup groupWithItems:@[
-            // The prefix on its own, for anything not listed here.
-            [KeyItem macro:@"Prefix" code:prefixKey flags:prefixFlags],
-            command(@"Detach", 0x44),
+            command(@"←", 0x25),
+            command(@"↓", 0x28),
+            command(@"↑", 0x26),
+            command(@"→", 0x27),
         ]],
     ]];
 }
