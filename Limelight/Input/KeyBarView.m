@@ -437,6 +437,10 @@ static UIColor *KeyBarModifierKeyColor(void) {
             [KeyboardSupport sendChordWithVirtualKey:button.item.virtualKey
                                        modifierFlags:button.item.modifiers];
             return;
+
+        case KeyItemKindSequence:
+            [self sendSequence:button.item.steps];
+            return;
     }
 }
 
@@ -490,6 +494,22 @@ static UIColor *KeyBarModifierKeyColor(void) {
     return mask;
 }
 
+/// Sends chords one after another, each fully released before the next begins.
+///
+/// The release matters: a prefix key only counts as a prefix if it is up again before the
+/// command key arrives, which is the whole difference between Control-A then z, and
+/// Control-A-Z.
+- (void)sendSequence:(NSArray<KeyStep *> *)steps {
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
+        for (KeyStep *step in steps) {
+            [KeyboardSupport sendChordWithVirtualKey:step.virtualKey modifierFlags:step.modifiers];
+            // sendChord dispatches its own work, so leave room for it to finish before the
+            // next step starts. Without the gap the host can see the two overlap.
+            usleep(120 * 1000);
+        }
+    });
+}
+
 - (void)sendKey:(short)virtualKey {
     char mask = [self activeModifierMask];
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
@@ -513,6 +533,15 @@ static UIColor *KeyBarModifierKeyColor(void) {
             [self applyAppearance:button];
         }
     }
+}
+
+/// Called when a key arrives from the system keyboard rather than from the bar.
+///
+/// Without this, a one-shot modifier armed on the bar stays armed after typing a letter, so
+/// Control-A followed by z reaches the host as Control-A then Control-Z. That is exactly the
+/// case a tmux prefix needs to work.
+- (void)externalKeyWasTyped {
+    [self consumeOneShotModifiers];
 }
 
 - (void)releaseHeldModifiers {

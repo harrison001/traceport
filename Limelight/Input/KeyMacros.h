@@ -32,7 +32,20 @@ typedef NS_ENUM(NSInteger, KeyItemKind) {
     KeyItemKindModifier,
     /// Sends a complete chord regardless of what the bar is holding.
     KeyItemKindMacro,
+    /// Sends several chords in order, with a pause between them.
+    ///
+    /// Chords cannot express what tmux and every other prefix-key program need: Control-A,
+    /// released, then z. That is two events in sequence, not one combination, and it is the
+    /// shape Stream Deck calls a multi-action.
+    KeyItemKindSequence,
 };
+
+/// One step of a sequence.
+@interface KeyStep : NSObject
+@property (nonatomic, assign, readonly) short virtualKey;
+@property (nonatomic, assign, readonly) UIKeyModifierFlags modifiers;
++ (instancetype)step:(short)virtualKey modifiers:(UIKeyModifierFlags)modifiers;
+@end
 
 @interface KeyItem : NSObject
 
@@ -47,6 +60,10 @@ typedef NS_ENUM(NSInteger, KeyItemKind) {
 + (instancetype)key:(NSString *)label code:(short)virtualKey;
 + (instancetype)modifier:(NSString *)label code:(short)virtualKey flag:(UIKeyModifierFlags)flag;
 + (instancetype)macro:(NSString *)label code:(short)virtualKey flags:(UIKeyModifierFlags)flags;
++ (instancetype)sequence:(NSString *)label steps:(NSArray<KeyStep *> *)steps;
+
+/// Set only for sequences.
+@property (nonatomic, copy, readonly, nullable) NSArray<KeyStep *> *steps;
 
 @end
 

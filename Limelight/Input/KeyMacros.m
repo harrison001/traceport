@@ -5,6 +5,19 @@
 
 #import "KeyMacros.h"
 
+@implementation KeyStep
+
++ (instancetype)step:(short)virtualKey modifiers:(UIKeyModifierFlags)modifiers {
+    KeyStep *step = [[KeyStep alloc] init];
+    if (step != nil) {
+        step->_virtualKey = virtualKey;
+        step->_modifiers = modifiers;
+    }
+    return step;
+}
+
+@end
+
 @implementation KeyItem
 
 + (instancetype)itemWithLabel:(NSString *)label
@@ -31,6 +44,12 @@
 
 + (instancetype)macro:(NSString *)label code:(short)virtualKey flags:(UIKeyModifierFlags)flags {
     return [self itemWithLabel:label kind:KeyItemKindMacro code:virtualKey flags:flags];
+}
+
++ (instancetype)sequence:(NSString *)label steps:(NSArray<KeyStep *> *)steps {
+    KeyItem *item = [self itemWithLabel:label kind:KeyItemKindSequence code:0 flags:0];
+    item->_steps = [steps copy];
+    return item;
 }
 
 @end
@@ -155,6 +174,9 @@
                     [KeyItem macro:@"Spotlight" code:0x20 flags:UIKeyModifierCommand],
                     [KeyItem macro:@"Screenshot" code:0x34
                               flags:UIKeyModifierCommand | UIKeyModifierShift],
+                    // macOS switches input source on Control-Space by default. TraceRecorder
+                    // labels this 中/A, which says what it does better than the chord does.
+                    [KeyItem macro:@"中/A" code:0x20 flags:UIKeyModifierControl],
                 ]],
             ]],
 
@@ -178,9 +200,55 @@
                 modifiers,
                 [self functionKeys],
             ]],
+
+            [self tmuxPageForHost:KeyMacroHostMacOS],
         ];
     });
     return pages;
+}
+
+/// tmux and every other prefix-key program need a sequence, not a chord: Control-A, released,
+/// then the command key. Assembling that from the bar by hand does not work either, because a
+/// one-shot modifier is consumed by the next bar key and the letter comes from the system
+/// keyboard instead.
+///
+/// The prefix is Control-A here rather than tmux's default Control-B, which is what Harrison
+/// binds. Anyone with the default can hide this page and pin their own.
++ (KeyPage *)tmuxPageForHost:(KeyMacroHost)host {
+    UIKeyModifierFlags prefixFlags = UIKeyModifierControl;
+    short prefixKey = 0x41;  // A
+
+    KeyStep *prefix = [KeyStep step:prefixKey modifiers:prefixFlags];
+    KeyItem *(^command)(NSString *, short) = ^KeyItem *(NSString *label, short key) {
+        return [KeyItem sequence:label steps:@[prefix, [KeyStep step:key modifiers:0]]];
+    };
+
+    return [KeyPage pageNamed:@"tmux" groups:@[
+        [self modifiersForHost:host],
+        [KeyGroup groupWithItems:@[
+            // Window selection: prefix then the digit.
+            command(@"W1", 0x31),
+            command(@"W2", 0x32),
+            command(@"W3", 0x33),
+            command(@"W4", 0x34),
+        ]],
+        [KeyGroup groupWithItems:@[
+            command(@"Next", 0x4E),
+            command(@"Prev", 0x50),
+            command(@"Last", 0x4C),
+        ]],
+        [KeyGroup groupWithItems:@[
+            command(@"Zoom", 0x5A),
+            command(@"Split ⇅", 0xDE),   // quote, tmux's horizontal split
+            command(@"Split ⇄", 0x35),   // percent, shift-5
+            command(@"Kill", 0x58),
+        ]],
+        [KeyGroup groupWithItems:@[
+            // The prefix on its own, for anything not listed here.
+            [KeyItem macro:@"Prefix" code:prefixKey flags:prefixFlags],
+            command(@"Detach", 0x44),
+        ]],
+    ]];
 }
 
 /// The Windows equivalents. Standard shortcuts rather than ones proven in use, which is a

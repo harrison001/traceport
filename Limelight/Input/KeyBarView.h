@@ -51,6 +51,10 @@ NS_ASSUME_NONNULL_BEGIN
 /// with a modifier stuck down and every later keystroke arrives modified.
 - (void)releaseHeldModifiers;
 
+/// Tells the bar that a key came from the system keyboard, so a one-shot modifier armed here
+/// is released as it would be for a key on the bar.
+- (void)externalKeyWasTyped;
+
 /// Updates the keyboard key to reflect whether the system keyboard is currently showing.
 - (void)setSystemKeyboardVisible:(BOOL)visible;
 
