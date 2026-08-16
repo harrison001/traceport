@@ -35,6 +35,13 @@ typedef NS_ENUM(NSInteger, KeyMacroHost) {
 /// Modifiers held around it.
 @property (nonatomic, assign, readonly) UIKeyModifierFlags modifiers;
 
+/// Whether this belongs on the bar itself rather than in the menu.
+///
+/// The split is not a guess. TraceRecorder's Quick Input keeps exactly these next to the
+/// text field and puts the rest in a group of their own, which is the frequency ordering
+/// arrived at by using it.
+@property (nonatomic, assign, readonly) BOOL primary;
+
 @end
 
 @interface KeyMacros : NSObject

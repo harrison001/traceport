@@ -207,6 +207,16 @@ static UIColor *KeyBarModifierKeyColor(void) {
 
     [self addGroupSeparator];
 
+    // Clipboard chords earn a place on the bar itself: one tap instead of arming a modifier
+    // and then finding the letter, and they sit in the first screenful so no scroll is needed.
+    for (KeyMacro *macro in [KeyMacros macrosForHost:[KeyMacros defaultHost]]) {
+        if (macro.primary) {
+            [self addMacroKey:macro];
+        }
+    }
+
+    [self addGroupSeparator];
+
     [self addKeyWithTitle:@"esc" kind:KeyBarKeyKindNormal virtualKey:0x1B modifierMask:0];
     [self addKeyWithTitle:@"tab" kind:KeyBarKeyKindNormal virtualKey:0x09 modifierMask:0];
     [self addKeyWithTitle:@"⌦" kind:KeyBarKeyKindNormal virtualKey:0x2E modifierMask:0];
@@ -294,6 +304,24 @@ static UIColor *KeyBarModifierKeyColor(void) {
     button.showsMenuAsPrimaryAction = YES;
 
     [_row addArrangedSubview:button];
+}
+
+/// A whole chord on one key, sent as a unit rather than assembled from the bar.
+- (void)addMacroKey:(KeyMacro *)macro {
+    KeyBarButton *button = [self addKeyWithTitle:macro.label
+                                            kind:KeyBarKeyKindNormal
+                                      virtualKey:macro.virtualKey
+                                    modifierMask:0
+                                         toStack:_row];
+
+    // Its own modifiers, not the bar's: pressing Copy should not also apply a locked Shift.
+    [button removeTarget:self action:@selector(keyPressed:) forControlEvents:UIControlEventTouchUpInside];
+    UIKeyModifierFlags modifiers = macro.modifiers;
+    short virtualKey = macro.virtualKey;
+    UIAction *send = [UIAction actionWithHandler:^(__kindof UIAction *_Nonnull action) {
+        [KeyboardSupport sendChordWithVirtualKey:virtualKey modifierFlags:modifiers];
+    }];
+    [button addAction:send forControlEvents:UIControlEventTouchUpInside];
 }
 
 /// A wide gap between groups. Implemented as an empty view because UIStackView applies its

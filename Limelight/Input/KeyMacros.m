@@ -10,13 +10,15 @@
 - (instancetype)initWithLabel:(NSString *)label
                          help:(NSString *)help
                    virtualKey:(short)virtualKey
-                    modifiers:(UIKeyModifierFlags)modifiers {
+                    modifiers:(UIKeyModifierFlags)modifiers
+                      primary:(BOOL)primary {
     self = [super init];
     if (self != nil) {
         _label = [label copy];
         _help = [help copy];
         _virtualKey = virtualKey;
         _modifiers = modifiers;
+        _primary = primary;
     }
     return self;
 }
@@ -29,7 +31,16 @@
                help:(NSString *)help
                 key:(short)virtualKey
           modifiers:(UIKeyModifierFlags)modifiers {
-    return [[KeyMacro alloc] initWithLabel:label help:help virtualKey:virtualKey modifiers:modifiers];
+    return [[KeyMacro alloc] initWithLabel:label help:help virtualKey:virtualKey
+                                 modifiers:modifiers primary:NO];
+}
+
++ (KeyMacro *)primaryMacro:(NSString *)label
+                      help:(NSString *)help
+                       key:(short)virtualKey
+                 modifiers:(UIKeyModifierFlags)modifiers {
+    return [[KeyMacro alloc] initWithLabel:label help:help virtualKey:virtualKey
+                                 modifiers:modifiers primary:YES];
 }
 
 + (NSArray<KeyMacro *> *)macrosForHost:(KeyMacroHost)host {
@@ -49,11 +60,11 @@
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         macros = @[
-            [self macro:@"⌘A" help:@"Select all" key:0x41 modifiers:UIKeyModifierCommand],
-            [self macro:@"⌘C" help:@"Copy" key:0x43 modifiers:UIKeyModifierCommand],
-            [self macro:@"⌘X" help:@"Cut" key:0x58 modifiers:UIKeyModifierCommand],
-            [self macro:@"⌘V" help:@"Paste" key:0x56 modifiers:UIKeyModifierCommand],
-            [self macro:@"⌘Z" help:@"Undo" key:0x5A modifiers:UIKeyModifierCommand],
+            [self primaryMacro:@"⌘A" help:@"Select all" key:0x41 modifiers:UIKeyModifierCommand],
+            [self primaryMacro:@"⌘C" help:@"Copy" key:0x43 modifiers:UIKeyModifierCommand],
+            [self primaryMacro:@"⌘X" help:@"Cut" key:0x58 modifiers:UIKeyModifierCommand],
+            [self primaryMacro:@"⌘V" help:@"Paste" key:0x56 modifiers:UIKeyModifierCommand],
+            [self primaryMacro:@"⌘Z" help:@"Undo" key:0x5A modifiers:UIKeyModifierCommand],
 
             [self macro:@"⌘Tab" help:@"Switch to the previous app" key:0x09 modifiers:UIKeyModifierCommand],
             [self macro:@"⇧⌘Tab" help:@"App switcher, backwards" key:0x09
@@ -86,11 +97,11 @@
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         macros = @[
-            [self macro:@"Ctrl+A" help:@"Select all" key:0x41 modifiers:UIKeyModifierControl],
-            [self macro:@"Ctrl+C" help:@"Copy" key:0x43 modifiers:UIKeyModifierControl],
-            [self macro:@"Ctrl+X" help:@"Cut" key:0x58 modifiers:UIKeyModifierControl],
-            [self macro:@"Ctrl+V" help:@"Paste" key:0x56 modifiers:UIKeyModifierControl],
-            [self macro:@"Ctrl+Z" help:@"Undo" key:0x5A modifiers:UIKeyModifierControl],
+            [self primaryMacro:@"Ctrl+A" help:@"Select all" key:0x41 modifiers:UIKeyModifierControl],
+            [self primaryMacro:@"Ctrl+C" help:@"Copy" key:0x43 modifiers:UIKeyModifierControl],
+            [self primaryMacro:@"Ctrl+X" help:@"Cut" key:0x58 modifiers:UIKeyModifierControl],
+            [self primaryMacro:@"Ctrl+V" help:@"Paste" key:0x56 modifiers:UIKeyModifierControl],
+            [self primaryMacro:@"Ctrl+Z" help:@"Undo" key:0x5A modifiers:UIKeyModifierControl],
 
             [self macro:@"Alt+Tab" help:@"Switch to the previous app" key:0x09 modifiers:UIKeyModifierAlternate],
             [self macro:@"Alt+F4" help:@"Close the window" key:0x73 modifiers:UIKeyModifierAlternate],
