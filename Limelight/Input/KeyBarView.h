@@ -28,8 +28,22 @@ NS_ASSUME_NONNULL_BEGIN
 
 @property (nonatomic, weak) id<KeyBarViewDelegate> delegate;
 
-/// Identifies the host, so which operating system it runs is remembered per machine.
-- (instancetype)initWithFrame:(CGRect)frame hostKey:(nullable NSString *)hostKey;
+/// @param hostKey Identifies the host, so which operating system it runs is remembered per machine.
+/// @param appName The app launched on the host, if any. Gives each app its own customisations,
+///                the way Stream Deck switches profiles by which application is in front.
+- (instancetype)initWithFrame:(CGRect)frame
+                      hostKey:(nullable NSString *)hostKey
+                      appName:(nullable NSString *)appName;
+
+/// Lays the bar out along an axis.
+///
+/// Vertical is for the phone in landscape, where the streamed desktop is letterboxed into the
+/// middle and leaves a strip of black down each side wide enough to hold the bar without
+/// covering any picture at all — which is also where the thumbs are.
+- (void)setAxis:(UILayoutConstraintAxis)axis;
+
+/// How thick the bar is across its axis.
++ (CGFloat)barThickness;
 
 /// Releases every modifier the bar is holding down, on the host and visually.
 ///

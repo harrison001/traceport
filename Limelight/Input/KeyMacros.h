@@ -73,6 +73,23 @@ typedef NS_ENUM(NSInteger, KeyItemKind) {
 /// the one thing about them worth copying.
 + (NSArray<KeyPage *> *)pagesForHost:(KeyMacroHost)host;
 
+/// The pages for a host, with the user's own changes applied.
+///
+/// `profileKey` identifies host and streamed app together. Stream Deck switches its whole
+/// layout by which application is focused, and Moonlight is the thing that launched the app
+/// on the host, so the same signal is available here for free: what you pin while driving a
+/// terminal does not follow you into a design tool.
++ (NSArray<KeyPage *> *)pagesForHost:(KeyMacroHost)host profileKey:(nullable NSString *)profileKey;
+
+/// Adds an item to the profile's own page, which is shown first when it has anything in it.
++ (void)pinItem:(KeyItem *)item forProfile:(nullable NSString *)profileKey;
+/// Hides an item everywhere in this profile.
++ (void)hideItem:(KeyItem *)item forProfile:(nullable NSString *)profileKey;
++ (BOOL)isPinned:(KeyItem *)item forProfile:(nullable NSString *)profileKey;
+/// Drops every customisation for the profile.
++ (void)resetProfile:(nullable NSString *)profileKey;
++ (BOOL)hasCustomisationForProfile:(nullable NSString *)profileKey;
+
 /// Which operating system a given host runs, as the user has told us.
 ///
 /// The client cannot discover this on its own: Sunshine's /serverinfo carries no platform

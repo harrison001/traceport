@@ -35,6 +35,8 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     BOOL systemKeyboardVisible;
     /// Identifies the host, so its operating system is remembered per machine.
     NSString* hostKey;
+    /// The app launched on the host, which gives each app its own bar customisations.
+    NSString* streamedAppName;
 #endif
     
     float streamAspectRatio;
@@ -66,6 +68,7 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     self->streamAspectRatio = (float)streamConfig.width / (float)streamConfig.height;
 #if !TARGET_OS_TV
     self->hostKey = streamConfig.host;
+    self->streamedAppName = streamConfig.appName;
 #endif
     
     TemporarySettings* settings = [[[DataManager alloc] init] getSettings];
@@ -382,7 +385,8 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
                 keyInputField.text = @"0";
 #if !TARGET_OS_TV
                 keyBar = [[KeyBarView alloc] initWithFrame:CGRectMake(0, 0, self.bounds.size.width, 44)
-                                                  hostKey:hostKey];
+                                                  hostKey:hostKey
+                                                  appName:streamedAppName];
                 keyBar.delegate = self;
 
                 // With a hardware keyboard attached there is nothing to type on screen, and
@@ -420,8 +424,10 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
 /// what is on screen, not what the host believes is pressed.
 - (void)presentKeyBarWithSystemKeyboard:(BOOL)withSystemKeyboard {
     if (withSystemKeyboard) {
-        // As an inputAccessoryView, UIKit owns the frame.
+        // As an inputAccessoryView, UIKit owns the frame and the bar must lie along the top
+        // of the system keyboard.
         [keyBar removeFromSuperview];
+        [keyBar setAxis:UILayoutConstraintAxisHorizontal];
         keyBar.translatesAutoresizingMaskIntoConstraints = YES;
 
         keyInputField.inputAccessoryView = keyBar;
@@ -430,27 +436,49 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     } else {
         [keyInputField resignFirstResponder];
         keyInputField.inputAccessoryView = nil;
-        [self pinKeyBarToBottom];
+        [self pinKeyBar];
     }
 
     systemKeyboardVisible = withSystemKeyboard;
     [keyBar setSystemKeyboardVisible:withSystemKeyboard];
 }
 
-/// Pins the key bar to the bottom of the view, for use without the system keyboard.
-- (void)pinKeyBarToBottom {
+/// Pins the key bar to an edge, choosing the one that costs the least picture.
+///
+/// The streamed desktop is letterboxed to preserve its aspect, and where the black lands
+/// depends on the two shapes. A 1512x982 Mac on an iPhone in landscape fits 782 points wide
+/// inside 956, leaving 139 points of pure black down each side — a quarter of the screen,
+/// holding nothing, and exactly where the thumbs rest. The bar goes there. On iPad the same
+/// desktop fills the screen to within a few points, so there is no free edge and the bar sits
+/// along the bottom, blurred, over picture.
+- (void)pinKeyBar {
     if (keyBar.superview == self) {
         return;
     }
 
+    CGSize video = [self getVideoAreaSize];
+    CGFloat sideMargin = (self.bounds.size.width - video.width) / 2;
+    CGFloat bottomMargin = (self.bounds.size.height - video.height) / 2;
+    BOOL sideIsFree = sideMargin >= [KeyBarView barThickness] && sideMargin > bottomMargin;
+
+    [keyBar setAxis:sideIsFree ? UILayoutConstraintAxisVertical : UILayoutConstraintAxisHorizontal];
+
     keyBar.translatesAutoresizingMaskIntoConstraints = NO;
     [self addSubview:keyBar];
 
-    [NSLayoutConstraint activateConstraints:@[
-        [keyBar.leadingAnchor constraintEqualToAnchor:self.leadingAnchor],
-        [keyBar.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
-        [keyBar.bottomAnchor constraintEqualToAnchor:self.bottomAnchor],
-    ]];
+    if (sideIsFree) {
+        [NSLayoutConstraint activateConstraints:@[
+            [keyBar.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
+            [keyBar.topAnchor constraintEqualToAnchor:self.topAnchor],
+            [keyBar.bottomAnchor constraintEqualToAnchor:self.bottomAnchor],
+        ]];
+    } else {
+        [NSLayoutConstraint activateConstraints:@[
+            [keyBar.leadingAnchor constraintEqualToAnchor:self.leadingAnchor],
+            [keyBar.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
+            [keyBar.bottomAnchor constraintEqualToAnchor:self.bottomAnchor],
+        ]];
+    }
 }
 
 - (void)keyBarDidToggleSystemKeyboard {

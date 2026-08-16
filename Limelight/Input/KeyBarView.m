@@ -35,7 +35,7 @@ static const CGFloat keySpacing = 6;
 static const CGFloat padGroupSpacing = 33;
 static const CGFloat phoneGroupSpacing = 24;
 
-static const CGFloat rowVerticalInset = 8;
+static CGFloat const rowVerticalInset = 8;
 static const CGFloat rowHorizontalInset = 12;
 
 @interface KeyBarButton : UIButton
@@ -75,6 +75,11 @@ static UIColor *KeyBarModifierKeyColor(void) {
     NSArray<KeyPage *> *_pages;
     NSUInteger _pageIndex;
     NSString *_hostKey;
+    /// Host and app together: what you pin while driving one app should not follow you to another.
+    NSString *_profileKey;
+    UIScrollView *_scrollView;
+    UILayoutConstraintAxis _axis;
+    NSArray<NSLayoutConstraint *> *_axisConstraints;
 
     /// Modifier buttons on the current page. Rebuilt with the page, but the held state that
     /// matters lives on the host, so it is re-applied rather than reset.
@@ -105,23 +110,23 @@ static UIColor *KeyBarModifierKeyColor(void) {
     return [self isPad] ? padGroupSpacing : phoneGroupSpacing;
 }
 
-+ (CGFloat)barHeight {
-    return [self keyHeight] + rowVerticalInset * 2;
-}
-
 - (instancetype)initWithFrame:(CGRect)frame {
-    return [self initWithFrame:frame hostKey:nil];
+    return [self initWithFrame:frame hostKey:nil appName:nil];
 }
 
-- (instancetype)initWithFrame:(CGRect)frame hostKey:(NSString *)hostKey {
+- (instancetype)initWithFrame:(CGRect)frame hostKey:(NSString *)hostKey appName:(NSString *)appName {
     self = [super initWithFrame:frame];
     if (self == nil) {
         return nil;
     }
 
     _hostKey = [hostKey copy];
+    _profileKey = appName.length > 0
+        ? [NSString stringWithFormat:@"%@/%@", hostKey ?: @"", appName]
+        : [hostKey copy];
+    _axis = UILayoutConstraintAxisHorizontal;
     _modifierButtons = [NSMutableArray array];
-    _pages = [KeyMacros pagesForHost:[KeyMacros hostKindForKey:_hostKey]];
+    _pages = [KeyMacros pagesForHost:[KeyMacros hostKindForKey:_hostKey] profileKey:_profileKey];
     _pageIndex = 0;
 
     // On iPad the stream fills the screen almost exactly — a 1512x982 Mac desktop into a
@@ -143,9 +148,12 @@ static UIColor *KeyBarModifierKeyColor(void) {
     UIScrollView *scrollView = [[UIScrollView alloc] initWithFrame:CGRectZero];
     scrollView.translatesAutoresizingMaskIntoConstraints = NO;
     scrollView.showsHorizontalScrollIndicator = NO;
-    // The bar is short; bouncing makes it feel loose.
+    scrollView.showsVerticalScrollIndicator = NO;
+    // The bar is thin; bouncing makes it feel loose.
     scrollView.alwaysBounceHorizontal = NO;
+    scrollView.alwaysBounceVertical = NO;
     [self addSubview:scrollView];
+    _scrollView = scrollView;
 
     _row = [[UIStackView alloc] initWithFrame:CGRectZero];
     _row.translatesAutoresizingMaskIntoConstraints = NO;
@@ -167,34 +175,14 @@ static UIColor *KeyBarModifierKeyColor(void) {
                                                rowVerticalInset, rowHorizontalInset);
     [self addSubview:_controls];
 
-    [NSLayoutConstraint activateConstraints:@[
-        [scrollView.leadingAnchor constraintEqualToAnchor:self.safeAreaLayoutGuide.leadingAnchor],
-        [scrollView.trailingAnchor constraintEqualToAnchor:_controls.leadingAnchor],
-        [scrollView.topAnchor constraintEqualToAnchor:self.topAnchor],
-        [scrollView.bottomAnchor constraintEqualToAnchor:self.bottomAnchor],
-
-        [_controls.trailingAnchor constraintEqualToAnchor:self.safeAreaLayoutGuide.trailingAnchor],
-        [_controls.topAnchor constraintEqualToAnchor:self.topAnchor],
-        [_controls.bottomAnchor constraintEqualToAnchor:self.bottomAnchor],
-
-        [_row.leadingAnchor constraintEqualToAnchor:scrollView.contentLayoutGuide.leadingAnchor],
-        [_row.trailingAnchor constraintEqualToAnchor:scrollView.contentLayoutGuide.trailingAnchor],
-        [_row.topAnchor constraintEqualToAnchor:scrollView.contentLayoutGuide.topAnchor],
-        [_row.bottomAnchor constraintEqualToAnchor:scrollView.contentLayoutGuide.bottomAnchor],
-        [_row.heightAnchor constraintEqualToAnchor:scrollView.frameLayoutGuide.heightAnchor],
-    ]];
-
-    // The page must yield to the controls, never the other way round.
-    [_controls setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
-    [_controls setContentCompressionResistancePriority:UILayoutPriorityRequired
-                                               forAxis:UILayoutConstraintAxisHorizontal];
+    [self applyAxisConstraints];
 
     [self buildControls];
     [self showPage:0];
 
     // The caller may have sized us before the keys existed; take the height we actually need.
     CGRect bounds = self.frame;
-    bounds.size.height = [KeyBarView barHeight];
+    bounds.size.height = [KeyBarView barThickness];
     self.frame = bounds;
 
     return self;
@@ -202,7 +190,78 @@ static UIColor *KeyBarModifierKeyColor(void) {
 
 /// Used by UIKit when this view is an inputAccessoryView, and by Auto Layout when pinned.
 - (CGSize)intrinsicContentSize {
-    return CGSizeMake(UIViewNoIntrinsicMetric, [KeyBarView barHeight]);
+    return _axis == UILayoutConstraintAxisHorizontal
+        ? CGSizeMake(UIViewNoIntrinsicMetric, [KeyBarView barThickness])
+        : CGSizeMake([KeyBarView barThickness], UIViewNoIntrinsicMetric);
+}
+
++ (CGFloat)barThickness {
+    return [self keyHeight] + rowVerticalInset * 2;
+}
+
+- (void)setAxis:(UILayoutConstraintAxis)axis {
+    if (_axis == axis) {
+        return;
+    }
+    _axis = axis;
+    _row.axis = axis;
+    _controls.axis = axis;
+    [self applyAxisConstraints];
+    [self showPage:_pageIndex];
+    [self invalidateIntrinsicContentSize];
+}
+
+/// The scroll view fills everything the controls do not, along whichever axis is in use.
+- (void)applyAxisConstraints {
+    if (_axisConstraints != nil) {
+        [NSLayoutConstraint deactivateConstraints:_axisConstraints];
+    }
+
+    UILayoutGuide *safe = self.safeAreaLayoutGuide;
+    UILayoutGuide *content = _scrollView.contentLayoutGuide;
+    UILayoutGuide *frame = _scrollView.frameLayoutGuide;
+
+    if (_axis == UILayoutConstraintAxisHorizontal) {
+        _axisConstraints = @[
+            [_scrollView.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor],
+            [_scrollView.trailingAnchor constraintEqualToAnchor:_controls.leadingAnchor],
+            [_scrollView.topAnchor constraintEqualToAnchor:self.topAnchor],
+            [_scrollView.bottomAnchor constraintEqualToAnchor:self.bottomAnchor],
+
+            [_controls.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor],
+            [_controls.topAnchor constraintEqualToAnchor:self.topAnchor],
+            [_controls.bottomAnchor constraintEqualToAnchor:self.bottomAnchor],
+
+            [_row.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],
+            [_row.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],
+            [_row.topAnchor constraintEqualToAnchor:content.topAnchor],
+            [_row.bottomAnchor constraintEqualToAnchor:content.bottomAnchor],
+            [_row.heightAnchor constraintEqualToAnchor:frame.heightAnchor],
+        ];
+    } else {
+        _axisConstraints = @[
+            [_scrollView.topAnchor constraintEqualToAnchor:safe.topAnchor],
+            [_scrollView.bottomAnchor constraintEqualToAnchor:_controls.topAnchor],
+            [_scrollView.leadingAnchor constraintEqualToAnchor:self.leadingAnchor],
+            [_scrollView.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
+
+            [_controls.bottomAnchor constraintEqualToAnchor:safe.bottomAnchor],
+            [_controls.leadingAnchor constraintEqualToAnchor:self.leadingAnchor],
+            [_controls.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
+
+            [_row.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],
+            [_row.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],
+            [_row.topAnchor constraintEqualToAnchor:content.topAnchor],
+            [_row.bottomAnchor constraintEqualToAnchor:content.bottomAnchor],
+            [_row.widthAnchor constraintEqualToAnchor:frame.widthAnchor],
+        ];
+    }
+
+    [NSLayoutConstraint activateConstraints:_axisConstraints];
+
+    // The page must yield to the controls, never the other way round.
+    [_controls setContentHuggingPriority:UILayoutPriorityRequired forAxis:_axis];
+    [_controls setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:_axis];
 }
 
 #pragma mark - Pages
@@ -305,6 +364,12 @@ static UIColor *KeyBarModifierKeyColor(void) {
 
     if (item.kind == KeyItemKindModifier) {
         [_modifierButtons addObject:button];
+    } else {
+        // Long press to make the bar your own. Termius and Stream Deck both let the user decide
+        // what is on the surface; Jump Desktop's fixed list is the thing that cannot fit anyone
+        // whose habits differ from its author's.
+        button.showsMenuAsPrimaryAction = NO;
+        button.menu = [self customisationMenuForItem:item];
     }
 
     [self applyAppearance:button];
@@ -316,7 +381,12 @@ static UIColor *KeyBarModifierKeyColor(void) {
 - (void)addGroupSeparator {
     UIView *spacer = [[UIView alloc] initWithFrame:CGRectZero];
     spacer.translatesAutoresizingMaskIntoConstraints = NO;
-    [spacer.widthAnchor constraintEqualToConstant:[KeyBarView groupSpacing] - keySpacing * 2].active = YES;
+    CGFloat gap = [KeyBarView groupSpacing] - keySpacing * 2;
+    if (_axis == UILayoutConstraintAxisHorizontal) {
+        [spacer.widthAnchor constraintEqualToConstant:gap].active = YES;
+    } else {
+        [spacer.heightAnchor constraintEqualToConstant:gap].active = YES;
+    }
     [_row addArrangedSubview:spacer];
 }
 
@@ -463,6 +533,55 @@ static UIColor *KeyBarModifierKeyColor(void) {
     [self nextPage];
 }
 
+/// Long-press menu on a key: put it on your own page, or take it away.
+- (UIMenu *)customisationMenuForItem:(KeyItem *)item {
+    __weak KeyBarView *weakSelf = self;
+    NSMutableArray<UIMenuElement *> *actions = [NSMutableArray array];
+
+    if (![KeyMacros isPinned:item forProfile:_profileKey]) {
+        [actions addObject:[UIAction actionWithTitle:@"Add to Mine"
+                                               image:[UIImage systemImageNamed:@"pin"]
+                                          identifier:nil
+                                             handler:^(__kindof UIAction *sender) {
+            [KeyMacros pinItem:item forProfile:weakSelf.profileKeyForMenu];
+            [weakSelf reloadPagesKeepingPage:NO];
+        }]];
+    }
+
+    [actions addObject:[UIAction actionWithTitle:@"Hide"
+                                           image:[UIImage systemImageNamed:@"eye.slash"]
+                                      identifier:nil
+                                         handler:^(__kindof UIAction *sender) {
+        [KeyMacros hideItem:item forProfile:weakSelf.profileKeyForMenu];
+        [weakSelf reloadPagesKeepingPage:YES];
+    }]];
+
+    if ([KeyMacros hasCustomisationForProfile:_profileKey]) {
+        UIAction *reset = [UIAction actionWithTitle:@"Reset This Bar"
+                                              image:[UIImage systemImageNamed:@"arrow.uturn.backward"]
+                                         identifier:nil
+                                            handler:^(__kindof UIAction *sender) {
+            [KeyMacros resetProfile:weakSelf.profileKeyForMenu];
+            [weakSelf reloadPagesKeepingPage:NO];
+        }];
+        reset.attributes = UIMenuElementAttributesDestructive;
+        [actions addObject:[UIMenu menuWithTitle:@"" image:nil identifier:nil
+                                         options:UIMenuOptionsDisplayInline children:@[reset]]];
+    }
+
+    return [UIMenu menuWithTitle:item.label children:actions];
+}
+
+- (NSString *)profileKeyForMenu {
+    return _profileKey;
+}
+
+- (void)reloadPagesKeepingPage:(BOOL)keep {
+    NSUInteger page = keep ? _pageIndex : 0;
+    _pages = [KeyMacros pagesForHost:[KeyMacros hostKindForKey:_hostKey] profileKey:_profileKey];
+    [self showPage:page];
+}
+
 /// Long-press menu: jump straight to a page, and say which operating system this host runs.
 - (void)rebuildPageMenu {
     NSMutableArray<UIAction *> *pageActions = [NSMutableArray array];
@@ -506,7 +625,7 @@ static UIColor *KeyBarModifierKeyColor(void) {
 - (void)changeHostKind:(KeyMacroHost)kind {
     [self releaseHeldModifiers];
     [KeyMacros setHostKind:kind forKey:_hostKey];
-    _pages = [KeyMacros pagesForHost:kind];
+    _pages = [KeyMacros pagesForHost:kind profileKey:_profileKey];
     [self showPage:0];
 }
 

@@ -278,4 +278,111 @@ static NSString *KeyMacroHostDefaultsKey(NSString *key) {
     return kind == KeyMacroHostMacOS ? @"macOS" : @"Windows";
 }
 
+#pragma mark - Customisation
+
+/// Items are identified by label. Labels are unique within a layout and survive a rebuild,
+/// which a pointer or an index would not.
+static NSString *KeyProfileDefaultsKey(NSString *profileKey, NSString *field) {
+    return [NSString stringWithFormat:@"KeyBar.%@.%@", profileKey.length > 0 ? profileKey : @"default", field];
+}
+
++ (NSArray<NSString *> *)storedListFor:(NSString *)profileKey field:(NSString *)field {
+    NSArray *stored = [[NSUserDefaults standardUserDefaults]
+        stringArrayForKey:KeyProfileDefaultsKey(profileKey, field)];
+    return stored ?: @[];
+}
+
++ (void)storeList:(NSArray<NSString *> *)list for:(NSString *)profileKey field:(NSString *)field {
+    [[NSUserDefaults standardUserDefaults] setObject:list forKey:KeyProfileDefaultsKey(profileKey, field)];
+}
+
++ (void)pinItem:(KeyItem *)item forProfile:(NSString *)profileKey {
+    NSArray<NSString *> *pinned = [self storedListFor:profileKey field:@"pinned"];
+    if ([pinned containsObject:item.label]) {
+        return;
+    }
+    [self storeList:[pinned arrayByAddingObject:item.label] for:profileKey field:@"pinned"];
+}
+
++ (void)hideItem:(KeyItem *)item forProfile:(NSString *)profileKey {
+    NSArray<NSString *> *hidden = [self storedListFor:profileKey field:@"hidden"];
+    if ([hidden containsObject:item.label]) {
+        return;
+    }
+    [self storeList:[hidden arrayByAddingObject:item.label] for:profileKey field:@"hidden"];
+}
+
++ (BOOL)isPinned:(KeyItem *)item forProfile:(NSString *)profileKey {
+    return [[self storedListFor:profileKey field:@"pinned"] containsObject:item.label];
+}
+
++ (void)resetProfile:(NSString *)profileKey {
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    [defaults removeObjectForKey:KeyProfileDefaultsKey(profileKey, @"pinned")];
+    [defaults removeObjectForKey:KeyProfileDefaultsKey(profileKey, @"hidden")];
+}
+
++ (BOOL)hasCustomisationForProfile:(NSString *)profileKey {
+    return [self storedListFor:profileKey field:@"pinned"].count > 0
+        || [self storedListFor:profileKey field:@"hidden"].count > 0;
+}
+
++ (NSArray<KeyPage *> *)pagesForHost:(KeyMacroHost)host profileKey:(NSString *)profileKey {
+    NSArray<KeyPage *> *base = [self pagesForHost:host];
+    NSArray<NSString *> *pinned = [self storedListFor:profileKey field:@"pinned"];
+    NSArray<NSString *> *hidden = [self storedListFor:profileKey field:@"hidden"];
+
+    if (pinned.count == 0 && hidden.count == 0) {
+        return base;
+    }
+
+    // Look up the pinned labels in the base layout so a pinned item keeps its real behaviour.
+    NSMutableDictionary<NSString *, KeyItem *> *byLabel = [NSMutableDictionary dictionary];
+    for (KeyPage *page in base) {
+        for (KeyGroup *group in page.groups) {
+            for (KeyItem *item in group.items) {
+                byLabel[item.label] = item;
+            }
+        }
+    }
+
+    NSMutableArray<KeyPage *> *pages = [NSMutableArray array];
+
+    if (pinned.count > 0) {
+        NSMutableArray<KeyItem *> *items = [NSMutableArray array];
+        for (NSString *label in pinned) {
+            KeyItem *item = byLabel[label];
+            if (item != nil && item.kind != KeyItemKindModifier) {
+                [items addObject:item];
+            }
+        }
+        if (items.count > 0) {
+            // Modifiers lead every page, including this one, so their position never moves.
+            [pages addObject:[KeyPage pageNamed:@"Mine"
+                                         groups:@[[self modifiersForHost:host],
+                                                  [KeyGroup groupWithItems:items]]]];
+        }
+    }
+
+    for (KeyPage *page in base) {
+        NSMutableArray<KeyGroup *> *groups = [NSMutableArray array];
+        for (KeyGroup *group in page.groups) {
+            NSMutableArray<KeyItem *> *items = [NSMutableArray array];
+            for (KeyItem *item in group.items) {
+                if (item.kind == KeyItemKindModifier || ![hidden containsObject:item.label]) {
+                    [items addObject:item];
+                }
+            }
+            if (items.count > 0) {
+                [groups addObject:[KeyGroup groupWithItems:items]];
+            }
+        }
+        if (groups.count > 0) {
+            [pages addObject:[KeyPage pageNamed:page.name groups:groups]];
+        }
+    }
+
+    return pages;
+}
+
 @end
