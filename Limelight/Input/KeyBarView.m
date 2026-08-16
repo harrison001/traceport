@@ -28,17 +28,23 @@ typedef NS_ENUM(NSInteger, KeyBarModifierState) {
 /// Time in microseconds a normal key is held before being released.
 static const useconds_t keyPressHoldTime = 50 * 1000;
 
-/// Apple's minimum comfortable hit target, and roughly the height of a system keyboard key.
-/// Anything smaller is measurably harder to hit with a thumb.
-static const CGFloat keyMinimumSide = 44;
+/// Key metrics, measured from RealVNC Viewer on the same two devices (2026-08-15).
+///
+/// It does not use one size everywhere: 60.0 x 56.5pt on iPad, 32.3 x 33.3pt on iPhone.
+/// We match it on iPad, but hold the phone at Apple's 44pt minimum hit target rather than
+/// following it down to 33pt, which is below what the guidelines call comfortable.
+static const CGFloat padKeyWidth = 60;
+static const CGFloat padKeyHeight = 56;
+static const CGFloat phoneKeySide = 44;
 
-/// Gap between keys, and around the row.
-static const CGFloat keySpacing = 8;
+/// Gap between keys inside a group, and between groups. RealVNC uses 6pt and 33pt on iPad:
+/// the wide separator is what lets you find a group without reading the labels.
+static const CGFloat keySpacing = 6;
+static const CGFloat padGroupSpacing = 33;
+static const CGFloat phoneGroupSpacing = 24;
+
 static const CGFloat rowVerticalInset = 8;
 static const CGFloat rowHorizontalInset = 12;
-
-/// Total bar height: one key plus the margins above and below it.
-static const CGFloat keyBarHeight = keyMinimumSide + rowVerticalInset * 2;
 
 @interface KeyBarButton : UIButton
 @property (nonatomic, assign) KeyBarKeyKind kind;
@@ -53,6 +59,28 @@ static const CGFloat keyBarHeight = keyMinimumSide + rowVerticalInset * 2;
 @implementation KeyBarView {
     UIStackView *_row;
     NSMutableArray<KeyBarButton *> *_modifierButtons;
+}
+
+/// iPad gets bigger keys than iPhone, as RealVNC does — there is room for them and they are
+/// easier to hit.
++ (BOOL)isPad {
+    return UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad;
+}
+
++ (CGFloat)keyWidth {
+    return [self isPad] ? padKeyWidth : phoneKeySide;
+}
+
++ (CGFloat)keyHeight {
+    return [self isPad] ? padKeyHeight : phoneKeySide;
+}
+
++ (CGFloat)groupSpacing {
+    return [self isPad] ? padGroupSpacing : phoneGroupSpacing;
+}
+
++ (CGFloat)barHeight {
+    return [self keyHeight] + rowVerticalInset * 2;
 }
 
 - (instancetype)initWithFrame:(CGRect)frame {
@@ -98,7 +126,7 @@ static const CGFloat keyBarHeight = keyMinimumSide + rowVerticalInset * 2;
 
     // The caller may have sized us before the keys existed; take the height we actually need.
     CGRect bounds = self.frame;
-    bounds.size.height = keyBarHeight;
+    bounds.size.height = [KeyBarView barHeight];
     self.frame = bounds;
 
     return self;
@@ -106,20 +134,27 @@ static const CGFloat keyBarHeight = keyMinimumSide + rowVerticalInset * 2;
 
 /// Used by UIKit when this view is an inputAccessoryView, and by Auto Layout when pinned.
 - (CGSize)intrinsicContentSize {
-    return CGSizeMake(UIViewNoIntrinsicMetric, keyBarHeight);
+    return CGSizeMake(UIViewNoIntrinsicMetric, [KeyBarView barHeight]);
 }
 
 /// Win32 virtual key codes, matching what the rest of the client sends.
+///
+/// Ordered in groups separated by a wide gap, the way RealVNC does it: modifiers, then
+/// editing keys, then the arrows. The separation is what makes a group findable at a glance,
+/// without reading any of the labels.
 - (void)populateKeys {
-    [self addKeyWithTitle:@"Done" kind:KeyBarKeyKindDismiss virtualKey:0 modifierMask:0];
-
-    [self addKeyWithTitle:@"esc" kind:KeyBarKeyKindNormal virtualKey:0x1B modifierMask:0];
-    [self addKeyWithTitle:@"tab" kind:KeyBarKeyKindNormal virtualKey:0x09 modifierMask:0];
-
     [self addKeyWithTitle:@"⇧" kind:KeyBarKeyKindModifier virtualKey:0xA0 modifierMask:MODIFIER_SHIFT];
     [self addKeyWithTitle:@"⌃" kind:KeyBarKeyKindModifier virtualKey:0xA2 modifierMask:MODIFIER_CTRL];
     [self addKeyWithTitle:@"⌥" kind:KeyBarKeyKindModifier virtualKey:0xA4 modifierMask:MODIFIER_ALT];
     [self addKeyWithTitle:@"⌘" kind:KeyBarKeyKindModifier virtualKey:0x5B modifierMask:MODIFIER_META];
+
+    [self addGroupSeparator];
+
+    [self addKeyWithTitle:@"esc" kind:KeyBarKeyKindNormal virtualKey:0x1B modifierMask:0];
+    [self addKeyWithTitle:@"tab" kind:KeyBarKeyKindNormal virtualKey:0x09 modifierMask:0];
+    [self addKeyWithTitle:@"⌦" kind:KeyBarKeyKindNormal virtualKey:0x2E modifierMask:0];
+
+    [self addGroupSeparator];
 
     // Requested in moonlight-ios#650, and present in every client surveyed.
     [self addKeyWithTitle:@"←" kind:KeyBarKeyKindNormal virtualKey:0x25 modifierMask:0];
@@ -127,7 +162,18 @@ static const CGFloat keyBarHeight = keyMinimumSide + rowVerticalInset * 2;
     [self addKeyWithTitle:@"↑" kind:KeyBarKeyKindNormal virtualKey:0x26 modifierMask:0];
     [self addKeyWithTitle:@"→" kind:KeyBarKeyKindNormal virtualKey:0x27 modifierMask:0];
 
-    [self addKeyWithTitle:@"⌦" kind:KeyBarKeyKindNormal virtualKey:0x2E modifierMask:0];
+    [self addGroupSeparator];
+
+    [self addKeyWithTitle:@"Done" kind:KeyBarKeyKindDismiss virtualKey:0 modifierMask:0];
+}
+
+/// A wide gap between groups. Implemented as an empty view because UIStackView applies its
+/// spacing uniformly and cannot vary it per gap.
+- (void)addGroupSeparator {
+    UIView *spacer = [[UIView alloc] initWithFrame:CGRectZero];
+    spacer.translatesAutoresizingMaskIntoConstraints = NO;
+    [spacer.widthAnchor constraintEqualToConstant:[KeyBarView groupSpacing] - keySpacing * 2].active = YES;
+    [_row addArrangedSubview:spacer];
 }
 
 - (void)addKeyWithTitle:(NSString *)title
@@ -141,14 +187,19 @@ static const CGFloat keyBarHeight = keyMinimumSide + rowVerticalInset * 2;
     button.modifierState = KeyBarModifierStateOff;
 
     [button setTitle:title forState:UIControlStateNormal];
-    button.titleLabel.font = [UIFont systemFontOfSize:19 weight:UIFontWeightMedium];
+    button.titleLabel.font = [UIFont systemFontOfSize:[KeyBarView isPad] ? 20 : 17
+                                               weight:UIFontWeightMedium];
     button.layer.cornerRadius = 8;
-    button.contentEdgeInsets = UIEdgeInsetsMake(0, 12, 0, 12);
+    button.contentEdgeInsets = UIEdgeInsetsMake(0, 6, 0, 6);
 
-    // 44pt on both sides is Apple's minimum hit target. The previous bar was 28pt tall and
-    // 40pt wide, which is why it was awkward to hit.
-    [button.heightAnchor constraintEqualToConstant:keyMinimumSide].active = YES;
-    [button.widthAnchor constraintGreaterThanOrEqualToConstant:keyMinimumSide].active = YES;
+    // Uniform width, as RealVNC does: a regular grid is easier to hit than keys that vary
+    // with the length of their label. Wider only where the label genuinely needs it.
+    CGFloat width = [KeyBarView keyWidth];
+    if (title.length > 3) {
+        width = MAX(width, [KeyBarView keyWidth] * 1.4);
+    }
+    [button.heightAnchor constraintEqualToConstant:[KeyBarView keyHeight]].active = YES;
+    [button.widthAnchor constraintEqualToConstant:width].active = YES;
 
     [button addTarget:self action:@selector(keyPressed:) forControlEvents:UIControlEventTouchUpInside];
 
@@ -163,7 +214,11 @@ static const CGFloat keyBarHeight = keyMinimumSide + rowVerticalInset * 2;
 - (void)applyAppearance:(KeyBarButton *)button {
     switch (button.modifierState) {
         case KeyBarModifierStateOff:
-            button.backgroundColor = [UIColor tertiarySystemBackgroundColor];
+            // Resting colour encodes the kind of key, as RealVNC does: modifiers read as grey
+            // and everything else as white, so the bar is scannable by shade alone.
+            button.backgroundColor = button.kind == KeyBarKeyKindModifier
+                ? [UIColor systemGray3Color]
+                : [UIColor secondarySystemGroupedBackgroundColor];
             button.layer.borderWidth = 0;
             break;
         case KeyBarModifierStateOneShot:
