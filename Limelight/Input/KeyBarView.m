@@ -56,10 +56,6 @@ static UIColor *KeyBarColor(CGFloat lightWhite, CGFloat darkWhite) {
     }];
 }
 
-static UIColor *KeyBarBackgroundColor(void) {
-    return KeyBarColor(0.87, 0.14);
-}
-
 /// Ordinary keys read as the white keys on RealVNC's bar.
 static UIColor *KeyBarNormalKeyColor(void) {
     return KeyBarColor(1.00, 0.38);
@@ -122,7 +118,21 @@ static UIColor *KeyBarModifierKeyColor(void) {
     _pages = [KeyMacros pagesForHost:[KeyMacros defaultHost]];
     _pageIndex = 0;
 
-    self.backgroundColor = KeyBarBackgroundColor();
+    // On iPad the stream fills the screen almost exactly — a 1512x982 Mac desktop into a
+    // 1133x744 iPad leaves about 4pt of letterbox — so the bar has no dead space to sit in
+    // and unavoidably covers picture. Blur rather than a solid fill, so what it covers stays
+    // legible underneath.
+    self.backgroundColor = [UIColor clearColor];
+    UIVisualEffectView *blur = [[UIVisualEffectView alloc]
+        initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemChromeMaterial]];
+    blur.translatesAutoresizingMaskIntoConstraints = NO;
+    [self addSubview:blur];
+    [NSLayoutConstraint activateConstraints:@[
+        [blur.leadingAnchor constraintEqualToAnchor:self.leadingAnchor],
+        [blur.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
+        [blur.topAnchor constraintEqualToAnchor:self.topAnchor],
+        [blur.bottomAnchor constraintEqualToAnchor:self.bottomAnchor],
+    ]];
 
     UIScrollView *scrollView = [[UIScrollView alloc] initWithFrame:CGRectZero];
     scrollView.translatesAutoresizingMaskIntoConstraints = NO;
