@@ -226,7 +226,9 @@
         [self modifiersForHost:host],
         [KeyGroup groupWithItems:@[
             command(@"Zoom", 0x5A),
-            command(@"⌃A b", 0x42),
+            // prefix b toggles synchronize-panes, so typing goes to every pane in the window
+            // at once. Harrison's binding turns the tmux status bar red while it is on.
+            command(@"Sync", 0x42),
         ]],
         // Prefix then an arrow moves the focus between panes.
         [KeyGroup groupWithItems:@[
@@ -234,6 +236,16 @@
             command(@"↓", 0x28),
             command(@"↑", 0x26),
             command(@"→", 0x27),
+        ]],
+        // None of the above reaches tmux while the host is composing in a Chinese input
+        // source: the Control chord gets through but the command key that follows is eaten
+        // by the composition. This is here so the fix is one tap away.
+        //
+        // It is not sent automatically before every command, because Control-Space toggles
+        // rather than selects — firing it blindly would switch a host that was already in
+        // English into Chinese, breaking the thing it was meant to protect.
+        [KeyGroup groupWithItems:@[
+            [KeyItem macro:@"中/A" code:0x20 flags:UIKeyModifierControl],
         ]],
     ]];
 }
