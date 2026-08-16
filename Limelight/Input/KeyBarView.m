@@ -33,6 +33,8 @@ static const useconds_t keyPressHoldTime = 50 * 1000;
 /// How long Spotlight is given to appear before it is typed into, and to rank what was typed
 /// before Return is pressed.
 static const useconds_t spotlightOpenTime = 450 * 1000;
+/// Matches KeyboardSupport's: a modifier has to be down before the key it modifies arrives.
+static const useconds_t modifierSettleTime = 30 * 1000;
 static const useconds_t spotlightRankTime = 600 * 1000;
 
 /// Key metrics, measured from RealVNC Viewer on the same two devices (2026-08-15).
@@ -960,11 +962,19 @@ typedef NS_ENUM(NSInteger, KeyBarLayout) {
 
 /// Spotlight, the program's name, Return.
 ///
+/// The name goes as one key event per character rather than as a UTF-8 text event, because
+/// Sunshine on macOS does not implement text events at all:
+///
+///     void unicode(input_t &input, char *utf8, int size) {
+///       BOOST_LOG(info) << "unicode: Unicode input not yet implemented for MacOS."sv;
+///     }
+///
+/// It logs the line and drops the string, so the first version of this opened Spotlight, typed
+/// nothing, and pressed Return on whatever was still highlighted from last time. Program names
+/// are ASCII, which translateKeyEvent: handles.
+///
 /// The waits are what make it work rather than a race. Spotlight needs a moment to appear
-/// before it will take text, and another to rank the results before Return picks the top hit —
-/// press too early and it opens whatever was still highlighted from the last search. The
-/// numbers come from TraceRecorder, shortened because that sends through a HID type queue and
-/// this sends the string in one event.
+/// before it will take keys, and another to rank the results before Return picks the top hit.
 - (void)jumpToApp:(NSString *)appName {
     if (appName.length == 0) {
         return;
@@ -974,8 +984,26 @@ typedef NS_ENUM(NSInteger, KeyBarLayout) {
         [KeyboardSupport sendChordWithVirtualKey:0x20 modifierFlags:UIKeyModifierCommand];
         usleep(spotlightOpenTime);
 
-        const char *utf8 = name.UTF8String;
-        LiSendUtf8TextEvent(utf8, (unsigned int)strlen(utf8));
+        for (NSUInteger i = 0; i < name.length; i++) {
+            struct KeyEvent event = [KeyboardSupport translateKeyEvent:[name characterAtIndex:i]
+                                                     withModifierFlags:0];
+            if (event.keycode == 0) {
+                continue;  // nothing on a keyboard produces it; the rest of the name still helps
+            }
+            if (event.modifier != 0) {
+                LiSendKeyboardEvent(event.modifierKeycode, KEY_ACTION_DOWN, event.modifier);
+                usleep(modifierSettleTime);
+            }
+            LiSendKeyboardEvent2(event.keycode, KEY_ACTION_DOWN, event.modifier,
+                                 SS_KBE_FLAG_NON_NORMALIZED);
+            usleep(keyPressHoldTime);
+            LiSendKeyboardEvent2(event.keycode, KEY_ACTION_UP, event.modifier,
+                                 SS_KBE_FLAG_NON_NORMALIZED);
+            if (event.modifier != 0) {
+                usleep(modifierSettleTime);
+                LiSendKeyboardEvent(event.modifierKeycode, KEY_ACTION_UP, event.modifier);
+            }
+        }
         usleep(spotlightRankTime);
 
         LiSendKeyboardEvent(0x0D, KEY_ACTION_DOWN, 0);
