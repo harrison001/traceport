@@ -186,6 +186,21 @@ static NSString *KeyHiddenDefaultsKey(NSString *profileKey) {
             [KeyItem key:@"⌫" code:0x08],
             [KeyItem key:@"⌦" code:0x2E],
         ]],
+        // Ahead of the arrows, because this is what they are for: an input method on the host
+        // numbers its candidates and you pick one by pressing the number. Reaching them meant
+        // switching the system keyboard to its 123 layer, losing sight of the candidates in
+        // the process.
+        [KeyGroup groupWithItems:@[
+            [KeyItem key:@"1" code:0x31],
+            [KeyItem key:@"2" code:0x32],
+            [KeyItem key:@"3" code:0x33],
+            [KeyItem key:@"4" code:0x34],
+            [KeyItem key:@"5" code:0x35],
+            [KeyItem key:@"6" code:0x36],
+            [KeyItem key:@"7" code:0x37],
+            [KeyItem key:@"8" code:0x38],
+            [KeyItem key:@"9" code:0x39],
+        ]],
         [KeyGroup groupWithItems:@[
             [KeyItem key:@"←" code:0x25],
             [KeyItem key:@"↓" code:0x28],
