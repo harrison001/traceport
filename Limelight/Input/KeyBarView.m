@@ -183,7 +183,6 @@ typedef NS_ENUM(NSInteger, KeyBarLayout) {
     UIStackView *_controls;
 
     KeyBarLayout _layout;
-    KeyBarContent _content;
     /// How many of _groups came from the keyboard rather than the pad.
     NSUInteger _keyboardGroupCount;
     CGFloat _marginWidth;
@@ -395,6 +394,7 @@ typedef NS_ENUM(NSInteger, KeyBarLayout) {
             [_primary.topAnchor constraintEqualToAnchor:self.safeAreaLayoutGuide.topAnchor],
             [_primary.bottomAnchor constraintEqualToAnchor:foot constant:-footInset],
 
+        ] arrayByAddingObjectsFromArray:(_showsControls ? @[
             [_controls.leadingAnchor constraintEqualToAnchor:_primary.leadingAnchor],
             [_controls.trailingAnchor constraintEqualToAnchor:_primary.trailingAnchor],
             [_controls.bottomAnchor constraintEqualToAnchor:_primary.safeAreaLayoutGuide.bottomAnchor],
@@ -402,7 +402,9 @@ typedef NS_ENUM(NSInteger, KeyBarLayout) {
             [_secondaryControls.leadingAnchor constraintEqualToAnchor:_secondary.leadingAnchor],
             [_secondaryControls.trailingAnchor constraintEqualToAnchor:_secondary.trailingAnchor],
             [_secondaryControls.bottomAnchor constraintEqualToAnchor:_secondary.safeAreaLayoutGuide.bottomAnchor],
-        ] arrayByAddingObjectsFromArray:
+        ] : @[])];
+
+        _layoutConstraints = [_layoutConstraints arrayByAddingObjectsFromArray:
             [self constraintsForPanel:_primary above:(_showsControls ? _controls.topAnchor : nil)]];
 
         _layoutConstraints = [_layoutConstraints arrayByAddingObjectsFromArray:
@@ -707,7 +709,10 @@ typedef NS_ENUM(NSInteger, KeyBarLayout) {
     [_keyboardToggle addTarget:self action:@selector(keyboardTogglePressed) forControlEvents:UIControlEventTouchUpInside];
     [_controls addArrangedSubview:_keyboardToggle];
 
-    _doneButton = [self buttonWithTitle:@"Done" wide:YES];
+    // "Done" on the keyboard, "✕" on the pad: they close different things, and two keys
+    // reading Done on one screen is the thing that made the last version confusing.
+    _doneButton = [self buttonWithTitle:_content == KeyBarContentPad ? @"✕" : @"Done"
+                                   wide:_content != KeyBarContentPad];
     [_doneButton addTarget:self action:@selector(donePressed) forControlEvents:UIControlEventTouchUpInside];
     [self placeDoneButton];
     [self restyleControls];
@@ -1222,11 +1227,11 @@ typedef NS_ENUM(NSInteger, KeyBarLayout) {
 }
 
 - (void)keyboardTogglePressed {
-    [self.delegate keyBarDidToggleSystemKeyboard];
+    [self.delegate keyBarDidToggleSystemKeyboard:self];
 }
 
 - (void)donePressed {
-    [self.delegate keyBarDidRequestDismiss];
+    [self.delegate keyBarDidRequestDismiss:self];
 }
 
 - (void)setSystemKeyboardVisible:(BOOL)visible {

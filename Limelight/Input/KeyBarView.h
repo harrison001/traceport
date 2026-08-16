@@ -26,26 +26,34 @@ typedef NS_ENUM(NSInteger, KeyBarContent) {
     KeyBarContentBoth,
 };
 
+@class KeyBarView;
+
 @protocol KeyBarPadObserver <NSObject>
 - (void)keyBarPadDidChange;
 @end
 
 @protocol KeyBarViewDelegate <NSObject>
 
-/// The dismiss key was pressed.
-- (void)keyBarDidRequestDismiss;
+/// The dismiss key was pressed. Which bar it came from decides what closes: the keyboard's own
+/// Done puts the keyboard away and leaves the pad, and the pad's ✕ puts the pad away. Two
+/// layers, two dismissals, rather than one key that takes everything with it.
+- (void)keyBarDidRequestDismiss:(KeyBarView *)bar;
 
-/// The keyboard key was pressed: show the system keyboard if it is hidden, hide it if not.
+/// The keyboard key was pressed: show the system keyboard if it is hidden, hide it if not — or
+/// bring the whole keyboard layer back if it has been dismissed.
 ///
 /// Held modifiers must survive the switch — this changes what is on screen, not what the host
 /// thinks is pressed.
-- (void)keyBarDidToggleSystemKeyboard;
+- (void)keyBarDidToggleSystemKeyboard:(KeyBarView *)bar;
 
 @end
 
 @interface KeyBarView : UIView
 
 @property (nonatomic, weak) id<KeyBarViewDelegate> delegate;
+
+/// What this bar holds, so a delegate serving both can tell them apart.
+@property (nonatomic, assign, readonly) KeyBarContent content;
 
 /// Told when this bar changes the pad's contents, so the pad — a different instance — knows to
 /// rebuild. Adding a key from the keyboard is the only thing that does it.

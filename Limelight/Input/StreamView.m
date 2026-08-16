@@ -377,9 +377,10 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
         if ([[event allTouches] count] == 3) {
             if (isInputingText) {
                 Log(LOG_D, @"Closing the keyboard");
-                [keyInputField resignFirstResponder];
 #if !TARGET_OS_TV
                 [self dismissKeyBar];
+#else
+                [keyInputField resignFirstResponder];
 #endif
                 isInputingText = false;
             } else {
@@ -419,32 +420,29 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     return NO;
 }
 
-/// Builds whichever surfaces this screen has room for.
-///
-/// Two of them where the stream is letterboxed: a keyboard line that comes and goes with the
-/// system keyboard, and a pad of macros down the margins that stays either way. One of them
-/// where it is not, carrying both, because there is nowhere for a second.
+/// Builds both layers: the keyboard, and the pad if this screen has a letterbox to put it in.
 - (void)createKeyBars {
-    CGRect line = CGRectMake(0, 0, self.bounds.size.width, 44);
-    BOOL hasMargin = [self keyBarMarginWidth] > 0;
-
-    keyBar = [[KeyBarView alloc] initWithFrame:line
-                                       hostKey:hostKey
-                                       appName:streamedAppName
-                                       content:hasMargin ? KeyBarContentKeyboard
-                                                         : KeyBarContentBoth];
-    keyBar.delegate = self;
-    keyBar.padDelegate = self;
-
-    if (hasMargin) {
+    if ([self keyBarMarginWidth] > 0) {
         macroPad = [[KeyBarView alloc] initWithFrame:self.bounds
                                              hostKey:hostKey
                                              appName:streamedAppName
                                              content:KeyBarContentPad];
         macroPad.delegate = self;
-        macroPad.showsControls = YES;
         [self pinMacroPad];
     }
+    [self createKeyboardBar];
+}
+
+/// The line above the system keyboard. Carries the pad's contents too where there is no pad,
+/// because otherwise the macros would have nowhere to live.
+- (void)createKeyboardBar {
+    keyBar = [[KeyBarView alloc] initWithFrame:CGRectMake(0, 0, self.bounds.size.width, 44)
+                                       hostKey:hostKey
+                                       appName:streamedAppName
+                                       content:macroPad != nil ? KeyBarContentKeyboard
+                                                               : KeyBarContentBoth];
+    keyBar.delegate = self;
+    keyBar.padDelegate = self;
 }
 
 /// Puts the pad in the letterbox: both strips, with the middle passing through to the stream.
@@ -547,8 +545,51 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     [macroPad reloadPad];
 }
 
-- (void)keyBarDidToggleSystemKeyboard {
+- (void)keyBarDidToggleSystemKeyboard:(KeyBarView *)bar {
+    if (keyBar == nil) {
+        // Pressed on the pad after the keyboard was dismissed: bring the whole layer back.
+        [self createKeyboardBar];
+        [self presentKeyBarWithSystemKeyboard:YES];
+        return;
+    }
     [self presentKeyBarWithSystemKeyboard:!systemKeyboardVisible];
+}
+
+/// Closes one layer, not both.
+///
+/// Done on the keyboard puts the keyboard away — the system keyboard with it — and leaves the
+/// pad floating in the margins. ✕ on the pad puts the pad away. Whichever goes last takes the
+/// session's text input with it.
+- (void)keyBarDidRequestDismiss:(KeyBarView *)bar {
+    if (bar == macroPad) {
+        [macroPad removeFromSuperview];
+        macroPad = nil;
+        // The line was carrying only the keyboard because the pad had the macros. With the pad
+        // gone it has to carry both, or the macros become unreachable.
+        if (keyBar != nil) {
+            BOOL keyboardWasVisible = systemKeyboardVisible;
+            [self teardownKeyboardBar];
+            [self createKeyboardBar];
+            [self presentKeyBarWithSystemKeyboard:keyboardWasVisible];
+        }
+    } else {
+        [self teardownKeyboardBar];
+        macroPad.bottomInset = 0;
+    }
+
+    if (keyBar == nil && macroPad == nil) {
+        [self dismissKeyBar];
+    }
+}
+
+/// Takes the keyboard line down without touching the pad.
+- (void)teardownKeyboardBar {
+    [keyBar releaseHeldModifiers];
+    [keyInputField resignFirstResponder];
+    keyInputField.inputAccessoryView = nil;
+    [keyBar removeFromSuperview];
+    keyBar = nil;
+    systemKeyboardVisible = NO;
 }
 
 /// Tears the key bar down by whichever route it was shown, releasing any held modifiers.
@@ -556,13 +597,10 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
 /// Skipping the release would leave the host with a modifier stuck down, and every
 /// subsequent keystroke would silently arrive modified.
 - (void)dismissKeyBar {
-    [keyBar releaseHeldModifiers];
-    [keyBar removeFromSuperview];
+    [self teardownKeyboardBar];
     [macroPad removeFromSuperview];
-
-    keyInputField.inputAccessoryView = nil;
-    keyBar = nil;
     macroPad = nil;
+    isInputingText = false;
 }
 
 - (void)keyBarDidRequestDismiss {
