@@ -542,15 +542,16 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     // The bottom of the caret line, in the picture's own coordinates before any lift.
     CGFloat caretBottom = videoTop + (normalisedCaret.origin.y + normalisedCaret.size.height) * video.height;
 
-    CGFloat keyboardTop = self.bounds.size.height;
+    // Measured on a view that does not move. Reading the keyboard from this view means reading
+    // it through the very transform the reading decides, and any such loop settles somewhere
+    // other than where it should — correcting for it afterwards is guesswork about what UIKit
+    // does with layout guides under a transform. The host view is never lifted, so there is no
+    // loop to reason about.
+    UIView *reference = [self keyBarHostView];
+    CGFloat keyboardTop = reference.bounds.size.height;
     if (@available(iOS 15.0, *)) {
-        keyboardTop = self.keyboardLayoutGuide.layoutFrame.origin.y;
+        keyboardTop = reference.keyboardLayoutGuide.layoutFrame.origin.y;
     }
-    // Measured against where the keyboard is with the picture unlifted. The guide reports in
-    // this view's own coordinates, so once the picture has been moved up the keyboard appears
-    // that much further down in them — feeding that straight back in makes the lift alternate
-    // between two values instead of settling on one.
-    keyboardTop -= pictureLift;
 
     if (keyboardTop <= 0 || keyboardTop >= self.bounds.size.height) {
         [self liftPictureBy:0];
@@ -573,7 +574,9 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
 /// owns for pinch zoom in touchscreen mode. Touch coordinates follow the move on their own,
 /// because everything is still measured inside the view that moved.
 - (void)liftPictureBy:(CGFloat)points {
-    if (fabs(points - pictureLift) < 1) {
+    // A caret moving along its line changes this by a point or two constantly; re-animating for
+    // that is what makes the picture look like it is breathing.
+    if (fabs(points - pictureLift) < 12 && !(points == 0 && pictureLift != 0)) {
         return;
     }
     pictureLift = points;
@@ -626,7 +629,9 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     if ([self.superview isKindOfClass:[UIScrollView class]] && self.superview.superview != nil) {
         return self.superview.superview;
     }
-    return self;
+    // Never this view. It is the one that gets lifted to clear the keyboard, and controls that
+    // ride up and down with the picture are worse than no controls.
+    return self.superview ?: self;
 }
 
 - (void)keyBarPadDidChange {
