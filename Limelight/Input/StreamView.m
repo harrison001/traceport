@@ -859,6 +859,61 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     return YES;
 }
 
+/// Chords that iPadOS acts on itself and never delivers as UIPress events, so the HID path in
+/// pressesBegan: never sees them and the host never receives them. Claiming them as key
+/// commands with wantsPriorityOverSystemBehavior is the only way to forward them.
+///
+/// `input` is what UIKit matches on; `virtualKey` is the Win32 code the host receives.
+static const struct {
+    const char *input;
+    UIKeyModifierFlags modifiers;
+    short virtualKey;
+} systemReservedChords[] = {
+    // Input source switching, and Spotlight on the iPad side.
+    { " ",  UIKeyModifierCommand,                        0x20 },  // VK_SPACE
+    { " ",  UIKeyModifierCommand | UIKeyModifierControl, 0x20 },
+    // App switching.
+    { "\t", UIKeyModifierCommand,                        0x09 },  // VK_TAB
+    { "\t", UIKeyModifierCommand | UIKeyModifierShift,   0x09 },
+    // Window and application management, all swallowed by iPadOS.
+    { "h",  UIKeyModifierCommand,                        0x48 },
+    { "h",  UIKeyModifierCommand | UIKeyModifierShift,   0x48 },
+    { "q",  UIKeyModifierCommand,                        0x51 },
+    { "w",  UIKeyModifierCommand,                        0x57 },
+    { "m",  UIKeyModifierCommand,                        0x4D },
+    // Cycle windows of the same application.
+    { "`",  UIKeyModifierCommand,                        0xC0 },  // VK_OEM_3
+    { "`",  UIKeyModifierCommand | UIKeyModifierShift,   0xC0 },
+};
+
+- (NSArray<UIKeyCommand *> *)systemReservedKeyCommands API_AVAILABLE(ios(15.0)) {
+    NSMutableArray<UIKeyCommand *> *commands = [NSMutableArray array];
+
+    for (size_t i = 0; i < sizeof(systemReservedChords) / sizeof(systemReservedChords[0]); i++) {
+        UIKeyCommand *command = [UIKeyCommand keyCommandWithInput:@(systemReservedChords[i].input)
+                                                    modifierFlags:systemReservedChords[i].modifiers
+                                                           action:@selector(systemReservedChordPressed:)];
+
+        // Without this, iPadOS keeps acting on the chord itself and the action never fires.
+        command.wantsPriorityOverSystemBehavior = YES;
+
+        [commands addObject:command];
+    }
+
+    return commands;
+}
+
+- (void)systemReservedChordPressed:(UIKeyCommand *)command API_AVAILABLE(ios(15.0)) {
+    for (size_t i = 0; i < sizeof(systemReservedChords) / sizeof(systemReservedChords[0]); i++) {
+        if (systemReservedChords[i].modifiers == command.modifierFlags &&
+            [@(systemReservedChords[i].input) isEqualToString:command.input]) {
+            [KeyboardSupport sendChordWithVirtualKey:systemReservedChords[i].virtualKey
+                                       modifierFlags:command.modifierFlags];
+            return;
+        }
+    }
+}
+
 - (NSArray<UIKeyCommand *> *)keyCommands
 {
     NSString *charset = @"qwertyuiopasdfghjklzxcvbnm1234567890\t§[]\\'\"/.,`<>-´ç+`¡'º;ñ= ";
@@ -898,7 +953,13 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
                                                 modifierFlags:UIKeyModifierAlternate
                                                        action:@selector(specialCharPressed:)]];
     }
-    
+
+    // Everything above reaches us through the ordinary responder chain. The system-reserved
+    // chords do not, and need to be claimed explicitly.
+    if (@available(iOS 15.0, tvOS 15.0, *)) {
+        [commands addObjectsFromArray:[self systemReservedKeyCommands]];
+    }
+
     return commands;
 }
 

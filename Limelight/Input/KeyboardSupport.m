@@ -448,4 +448,48 @@
     event->modifierKeycode = 0x12;
 }
 
++ (void)sendChordWithVirtualKey:(short)keyCode modifierFlags:(UIKeyModifierFlags)modifierFlags {
+    // Win32 virtual key codes for the modifier keys themselves.
+    static const short shiftVirtualKey = 0x10;
+    static const short controlVirtualKey = 0x11;
+    static const short altVirtualKey = 0x12;
+    static const short metaVirtualKey = 0x5B;
+
+    NSMutableArray<NSNumber *> *heldKeys = [NSMutableArray array];
+    char modifierMask = 0;
+
+    if (modifierFlags & UIKeyModifierShift) {
+        modifierMask |= MODIFIER_SHIFT;
+        [heldKeys addObject:@(shiftVirtualKey)];
+    }
+    if (modifierFlags & UIKeyModifierControl) {
+        modifierMask |= MODIFIER_CTRL;
+        [heldKeys addObject:@(controlVirtualKey)];
+    }
+    if (modifierFlags & UIKeyModifierAlternate) {
+        modifierMask |= MODIFIER_ALT;
+        [heldKeys addObject:@(altVirtualKey)];
+    }
+    if (modifierFlags & UIKeyModifierCommand) {
+        modifierMask |= MODIFIER_META;
+        [heldKeys addObject:@(metaVirtualKey)];
+    }
+
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
+        for (NSNumber *virtualKey in heldKeys) {
+            LiSendKeyboardEvent(virtualKey.shortValue, KEY_ACTION_DOWN, modifierMask);
+        }
+
+        // Non-normalized, as in the other paths: these are not necessarily US English scancodes.
+        LiSendKeyboardEvent2(keyCode, KEY_ACTION_DOWN, modifierMask, SS_KBE_FLAG_NON_NORMALIZED);
+        usleep(50 * 1000);
+        LiSendKeyboardEvent2(keyCode, KEY_ACTION_UP, modifierMask, SS_KBE_FLAG_NON_NORMALIZED);
+
+        // Release in reverse, so the host never sees a modifier outlive the chord.
+        for (NSNumber *virtualKey in heldKeys.reverseObjectEnumerator) {
+            LiSendKeyboardEvent(virtualKey.shortValue, KEY_ACTION_UP, modifierMask);
+        }
+    });
+}
+
 @end
