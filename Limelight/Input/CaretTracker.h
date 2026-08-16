@@ -21,8 +21,18 @@ NS_ASSUME_NONNULL_BEGIN
 
 @interface CaretTracker : NSObject
 
-/// @param host The host's address, as the stream was configured with.
-- (instancetype)initWithHost:(NSString *)host;
+/// Polls over TLS with the paired client certificate, the same way the app asks for the
+/// application list. Where someone is typing says as much about what they are doing as the
+/// picture does, so it goes over the connection the host already verifies rather than the
+/// plain-text port beside it.
+///
+/// @param host The host's address, as the stream was configured with. The port on it is the
+///             streaming one rather than the one wanted here.
+/// @param httpsPort The host's TLS port.
+/// @param serverCert The host's certificate, to pin against. Nothing is polled without it.
+- (instancetype)initWithHost:(NSString *)host
+                   httpsPort:(unsigned short)httpsPort
+                  serverCert:(nullable NSData *)serverCert;
 
 /// Called on the main thread whenever an answer arrives.
 ///

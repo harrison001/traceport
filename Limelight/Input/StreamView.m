@@ -44,6 +44,10 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     BOOL systemKeyboardVisible;
     /// Identifies the host, so its operating system is remembered per machine.
     NSString* hostKey;
+    /// What the caret is asked for over: the host's TLS port and the certificate it was paired
+    /// with. The port carried on hostKey is the streaming one and is no use here.
+    unsigned short hostHttpsPort;
+    NSData* hostServerCert;
     /// The app launched on the host, which gives each app its own bar customisations.
     NSString* streamedAppName;
 #endif
@@ -77,6 +81,8 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     self->streamAspectRatio = (float)streamConfig.width / (float)streamConfig.height;
 #if !TARGET_OS_TV
     self->hostKey = streamConfig.host;
+    self->hostHttpsPort = streamConfig.httpsPort;
+    self->hostServerCert = streamConfig.serverCert;
     self->streamedAppName = streamConfig.appName;
 #endif
     
@@ -518,7 +524,9 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     }
 
     caretLogged = NO;
-    caretTracker = [[CaretTracker alloc] initWithHost:hostKey];
+    caretTracker = [[CaretTracker alloc] initWithHost:hostKey
+                                            httpsPort:hostHttpsPort
+                                           serverCert:hostServerCert];
     __weak StreamView *weakSelf = self;
     caretTracker.onCaret = ^(CGRect normalisedCaret, BOOL precise) {
         [weakSelf caretMovedTo:normalisedCaret precise:precise];
