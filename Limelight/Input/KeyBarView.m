@@ -365,22 +365,18 @@ typedef NS_ENUM(NSInteger, KeyBarLayout) {
             foot = self.keyboardLayoutGuide.topAnchor;
         }
 
-        // Outer edge on the safe area, inner edge on the letterbox boundary. Both matter and
-        // they are different things: the Dynamic Island sits on one side edge in landscape and
-        // is not touchable — iOS reports its 59pt inset down both sides — while the letterbox
-        // boundary is where the picture starts and must not be covered. Pinning the width to
-        // the difference is what keeps the column inside both at once, and it needs no constant
-        // to update when the insets change.
+        // Flush with the screen edge, and exactly as wide as the letterbox. Not the safe area:
+        // in landscape iOS reports a 59pt inset down both sides, and subtracting it from an
+        // 87pt letterbox leaves 28pt — a column of slivers with every label an ellipsis. The
+        // Dynamic Island does clip a key on one side, which is the price of the full width.
         _layoutConstraints = [@[
-            [_secondary.leadingAnchor constraintEqualToAnchor:self.safeAreaLayoutGuide.leadingAnchor],
-            [_secondary.trailingAnchor constraintEqualToAnchor:self.leadingAnchor
-                                                      constant:_marginWidth],
+            [_secondary.leadingAnchor constraintEqualToAnchor:self.leadingAnchor],
+            [_secondary.widthAnchor constraintEqualToConstant:_marginWidth],
             [_secondary.topAnchor constraintEqualToAnchor:self.safeAreaLayoutGuide.topAnchor],
             [_secondary.bottomAnchor constraintEqualToAnchor:foot],
 
-            [_primary.trailingAnchor constraintEqualToAnchor:self.safeAreaLayoutGuide.trailingAnchor],
-            [_primary.leadingAnchor constraintEqualToAnchor:self.trailingAnchor
-                                                   constant:-_marginWidth],
+            [_primary.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
+            [_primary.widthAnchor constraintEqualToConstant:_marginWidth],
             [_primary.topAnchor constraintEqualToAnchor:self.safeAreaLayoutGuide.topAnchor],
             [_primary.bottomAnchor constraintEqualToAnchor:foot],
 
@@ -559,25 +555,8 @@ typedef NS_ENUM(NSInteger, KeyBarLayout) {
 /// the system keyboard, and half the keys — the modifiers, the arrows, the tmux commands — are
 /// labelled with two or three characters and waste most of a 139pt row. Long macro names like
 /// "Mission Control" still take the full width, so nothing is truncated to fit.
-/// How wide a column actually is: the letterbox less whatever the safe area takes off the
-/// outer edge. Zero until the view is in a window, which is why the row is rebuilt when the
-/// insets arrive.
-- (CGFloat)columnWidth {
-    CGFloat inset = MAX(self.safeAreaInsets.left, self.safeAreaInsets.right);
-    return MAX(_marginWidth - inset, [KeyBarView keyWidth]);
-}
-
-/// The safe area is not known until the view is in a window, and it changes on rotation. Both
-/// move the column edges, and how many keys fit on a row follows from that.
-- (void)safeAreaInsetsDidChange {
-    [super safeAreaInsetsDidChange];
-    if (_layout == KeyBarLayoutSplit) {
-        [self buildRow];
-    }
-}
-
 - (NSArray<NSArray<KeyItem *> *> *)packItems:(NSArray<KeyItem *> *)items {
-    CGFloat inner = [self columnWidth] - rowVerticalInset * 2;
+    CGFloat inner = _marginWidth - rowVerticalInset * 2;
     CGFloat half = (inner - keySpacing) / 2;
     UIFont *font = [UIFont systemFontOfSize:[KeyBarView isPad] ? 19 : 16 weight:UIFontWeightMedium];
 
