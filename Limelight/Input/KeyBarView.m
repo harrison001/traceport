@@ -4,6 +4,8 @@
 //
 
 #import "KeyBarView.h"
+#import "KeyMacros.h"
+#import "KeyboardSupport.h"
 #include <Limelight.h>
 
 /// How a key behaves when tapped.
@@ -164,7 +166,43 @@ static const CGFloat rowHorizontalInset = 12;
 
     [self addGroupSeparator];
 
+    [self addMacroButton];
     [self addKeyWithTitle:@"Done" kind:KeyBarKeyKindDismiss virtualKey:0 modifierMask:0];
+}
+
+/// One button opening a menu of named actions, rather than a dozen more keys.
+///
+/// This is TeamViewer's shape, and it is the only way to reach chords whose other half lives
+/// on the system keyboard — Command-Space cannot be assembled from this bar at all when a
+/// hardware keyboard is attached and the system keyboard is therefore not shown.
+- (void)addMacroButton {
+    KeyBarButton *button = [KeyBarButton buttonWithType:UIButtonTypeSystem];
+    button.kind = KeyBarKeyKindNormal;
+    [button setTitle:@"⋯" forState:UIControlStateNormal];
+    button.titleLabel.font = [UIFont systemFontOfSize:[KeyBarView isPad] ? 22 : 19
+                                               weight:UIFontWeightMedium];
+    button.layer.cornerRadius = 8;
+    button.backgroundColor = [UIColor secondarySystemGroupedBackgroundColor];
+    button.tintColor = [UIColor labelColor];
+    [button.heightAnchor constraintEqualToConstant:[KeyBarView keyHeight]].active = YES;
+    [button.widthAnchor constraintEqualToConstant:[KeyBarView keyWidth]].active = YES;
+
+    NSMutableArray<UIAction *> *actions = [NSMutableArray array];
+    for (KeyMacro *macro in [KeyMacros macrosForHost:[KeyMacros defaultHost]]) {
+        UIAction *action = [UIAction actionWithTitle:macro.help
+                                               image:nil
+                                          identifier:nil
+                                             handler:^(__kindof UIAction *_Nonnull sender) {
+            [KeyboardSupport sendChordWithVirtualKey:macro.virtualKey modifierFlags:macro.modifiers];
+        }];
+        action.subtitle = macro.label;
+        [actions addObject:action];
+    }
+
+    button.menu = [UIMenu menuWithTitle:@"" children:actions];
+    button.showsMenuAsPrimaryAction = YES;
+
+    [_row addArrangedSubview:button];
 }
 
 /// A wide gap between groups. Implemented as an empty view because UIStackView applies its
