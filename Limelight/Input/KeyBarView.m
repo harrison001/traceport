@@ -320,10 +320,6 @@ static UIColor *KeyBarModifierKeyColor(void) {
 #pragma mark - Building
 
 - (void)buildControls {
-    KeyBarButton *text = [self buttonWithTitle:@"Text" wide:YES];
-    [text addTarget:self action:@selector(composeTextPressed) forControlEvents:UIControlEventTouchUpInside];
-    [_controls addArrangedSubview:text];
-
     _pageButton = [self buttonWithTitle:@"Keys" wide:YES];
     [_pageButton addTarget:self action:@selector(pageButtonPressed) forControlEvents:UIControlEventTouchUpInside];
     // Tap for the next page, which is the common action; long press for everything else, so
@@ -668,67 +664,6 @@ static UIColor *KeyBarModifierKeyColor(void) {
 
 - (void)donePressed {
     [self.delegate keyBarDidRequestDismiss];
-}
-
-/// Composes a whole string and sends it in one go.
-///
-/// Typing straight through goes key by key, which is right for a terminal but wrong for
-/// anything longer: you cannot see what you have written and you cannot fix it before the
-/// host receives it. A system alert carries a real text field, so the input method, the
-/// candidate list and the cursor all behave normally, and nothing reaches the host until
-/// Send.
-- (void)composeTextPressed {
-    UIViewController *presenter = self.window.rootViewController;
-    while (presenter.presentedViewController != nil) {
-        presenter = presenter.presentedViewController;
-    }
-    if (presenter == nil) {
-        return;
-    }
-
-    UIAlertController *alert =
-        [UIAlertController alertControllerWithTitle:@"Send Text"
-                                            message:@"Typed here, sent to the host in one piece."
-                                     preferredStyle:UIAlertControllerStyleAlert];
-
-    [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
-        field.autocorrectionType = UITextAutocorrectionTypeNo;
-        field.autocapitalizationType = UITextAutocapitalizationTypeNone;
-        field.spellCheckingType = UITextSpellCheckingTypeNo;
-        field.clearButtonMode = UITextFieldViewModeWhileEditing;
-    }];
-
-    __weak UIAlertController *weakAlert = alert;
-    void (^send)(BOOL) = ^(BOOL thenReturn) {
-        NSString *text = weakAlert.textFields.firstObject.text;
-        if (text.length == 0 && !thenReturn) {
-            return;
-        }
-        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
-            if (text.length > 0) {
-                const char *utf8 = text.UTF8String;
-                LiSendUtf8TextEvent(utf8, (int)strlen(utf8));
-            }
-            if (thenReturn) {
-                usleep(keyPressHoldTime);
-                LiSendKeyboardEvent(0x0D, KEY_ACTION_DOWN, 0);
-                usleep(keyPressHoldTime);
-                LiSendKeyboardEvent(0x0D, KEY_ACTION_UP, 0);
-            }
-        });
-    };
-
-    [alert addAction:[UIAlertAction actionWithTitle:@"Send"
-                                              style:UIAlertActionStyleDefault
-                                            handler:^(UIAlertAction *action) { send(NO); }]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"Send + Return"
-                                              style:UIAlertActionStyleDefault
-                                            handler:^(UIAlertAction *action) { send(YES); }]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel"
-                                              style:UIAlertActionStyleCancel
-                                            handler:nil]];
-
-    [presenter presentViewController:alert animated:YES completion:nil];
 }
 
 - (void)setSystemKeyboardVisible:(BOOL)visible {
