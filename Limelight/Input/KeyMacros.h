@@ -38,6 +38,9 @@ typedef NS_ENUM(NSInteger, KeyItemKind) {
     /// released, then z. That is two events in sequence, not one combination, and it is the
     /// shape Stream Deck calls a multi-action.
     KeyItemKindSequence,
+    /// Turns the mouse wheel. Not a key at all, but it is what the hand wants next to them:
+    /// in touchscreen mode two fingers pan the picture, so there is otherwise no way to scroll.
+    KeyItemKindScroll,
 };
 
 /// One step of a sequence.
@@ -61,6 +64,10 @@ typedef NS_ENUM(NSInteger, KeyItemKind) {
 + (instancetype)modifier:(NSString *)label code:(short)virtualKey flag:(UIKeyModifierFlags)flag;
 + (instancetype)macro:(NSString *)label code:(short)virtualKey flags:(UIKeyModifierFlags)flags;
 + (instancetype)sequence:(NSString *)label steps:(NSArray<KeyStep *> *)steps;
++ (instancetype)scroll:(NSString *)label clicks:(signed char)clicks;
+
+/// Wheel clicks per tap, positive towards the top of the document. Scroll items only.
+@property (nonatomic, assign, readonly) signed char scrollClicks;
 
 /// Set only for sequences.
 @property (nonatomic, copy, readonly, nullable) NSArray<KeyStep *> *steps;

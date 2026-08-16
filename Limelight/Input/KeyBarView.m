@@ -819,6 +819,10 @@ typedef NS_ENUM(NSInteger, KeyBarLayout) {
         case KeyItemKindSequence:
             [self sendSequence:button.item.steps];
             return;
+
+        case KeyItemKindScroll:
+            LiSendScrollEvent(button.item.scrollClicks);
+            return;
     }
 }
 

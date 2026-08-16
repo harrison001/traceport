@@ -52,6 +52,12 @@
     return item;
 }
 
++ (instancetype)scroll:(NSString *)label clicks:(signed char)clicks {
+    KeyItem *item = [self itemWithLabel:label kind:KeyItemKindScroll code:0 flags:0];
+    item->_scrollClicks = clicks;
+    return item;
+}
+
 @end
 
 @implementation KeyGroup
@@ -68,62 +74,122 @@
 
 @implementation KeyMacros
 
-/// Always leftmost, so their position never moves.
-+ (KeyGroup *)modifiersForHost:(KeyMacroHost)host {
+/// tmux, then the input source, then the text keys. This set is not designed here: it is
+/// TraceRecorder's Quick Input panel, which is the same person driving the same Mac, and it
+/// settled after daily use rather than on paper.
+///
+/// Every item is a macro. The bar carries no bare modifiers, no arrows and no letters, because
+/// the system keyboard is one tap away and already has them — spending the letterbox on a
+/// second keyboard buys nothing. Labels are the chord itself for the same reason the panel
+/// does it: "⌘W" is shorter than "Close", says more, and two of them fit on one row.
+
+/// Prefix sequences for tmux. A chord cannot express what a prefix-key program needs:
+/// Control-A, released, then the command key. That is two events in order, not one
+/// combination, and it is the shape Stream Deck calls a multi-action.
+///
+/// Kept to what Harrison actually drives: zoom a pane, the broadcast toggle, and moving the
+/// focus between panes. The prefix is Control-A rather than tmux's default Control-B.
++ (KeyGroup *)tmuxGroup {
+    KeyStep *prefix = [KeyStep step:0x41 modifiers:UIKeyModifierControl];  // Control-A
+    KeyItem *(^command)(NSString *, short) = ^KeyItem *(NSString *label, short key) {
+        return [KeyItem sequence:label steps:@[prefix, [KeyStep step:key modifiers:0]]];
+    };
+
+    return [KeyGroup groupWithItems:@[
+        command(@"⌃AZ", 0x5A),
+        // prefix b toggles synchronize-panes, so typing goes to every pane in the window at
+        // once. Harrison's binding turns the tmux status bar red while it is on.
+        command(@"⌃AB", 0x42),
+        command(@"⌃A←", 0x25),
+        command(@"⌃A↓", 0x28),
+        command(@"⌃A↑", 0x26),
+        command(@"⌃A→", 0x27),
+    ]];
+}
+
+/// The host's input source toggle, on its own so it is easy to find.
+///
+/// None of the tmux commands reach tmux while the host is composing in a Chinese input source:
+/// the Control chord gets through but the command key that follows is eaten by the
+/// composition. This is here so the fix is one tap away. It is not sent automatically before
+/// every command, because Control-Space toggles rather than selects — firing it blindly would
+/// switch a host that was already in English into Chinese, breaking the thing it protects.
++ (KeyGroup *)inputSourceGroup {
+    return [KeyGroup groupWithItems:@[
+        [KeyItem macro:@"中/A" code:0x20 flags:UIKeyModifierControl],
+    ]];
+}
+
+/// Delete, escape and the clipboard, exactly the panel's first row.
++ (KeyGroup *)textKeysForHost:(KeyMacroHost)host {
     BOOL mac = host == KeyMacroHostMacOS;
-    return [KeyGroup groupWithItems:@[
-        [KeyItem modifier:@"⇧" code:0xA0 flag:UIKeyModifierShift],
-        [KeyItem modifier:@"⌃" code:0xA2 flag:UIKeyModifierControl],
-        [KeyItem modifier:mac ? @"⌥" : @"alt" code:0xA4 flag:UIKeyModifierAlternate],
-        [KeyItem modifier:mac ? @"⌘" : @"⊞" code:0x5B flag:UIKeyModifierCommand],
-    ]];
-}
+    UIKeyModifierFlags m = mac ? UIKeyModifierCommand : UIKeyModifierControl;
+    NSString *sym = mac ? @"⌘" : @"⌃";
+    KeyItem *(^chord)(NSString *, short) = ^KeyItem *(NSString *letter, short key) {
+        return [KeyItem macro:[sym stringByAppendingString:letter] code:key flags:m];
+    };
 
-+ (KeyGroup *)clipboardForHost:(KeyMacroHost)host {
-    UIKeyModifierFlags m = host == KeyMacroHostMacOS ? UIKeyModifierCommand : UIKeyModifierControl;
     return [KeyGroup groupWithItems:@[
-        [KeyItem macro:@"Copy" code:0x43 flags:m],
-        [KeyItem macro:@"Paste" code:0x56 flags:m],
-        [KeyItem macro:@"Cut" code:0x58 flags:m],
-        [KeyItem macro:@"All" code:0x41 flags:m],
-        [KeyItem macro:@"Undo" code:0x5A flags:m],
-    ]];
-}
-
-+ (KeyGroup *)arrows {
-    return [KeyGroup groupWithItems:@[
-        [KeyItem key:@"←" code:0x25],
-        [KeyItem key:@"↓" code:0x28],
-        [KeyItem key:@"↑" code:0x26],
-        [KeyItem key:@"→" code:0x27],
-    ]];
-}
-
-+ (KeyGroup *)functionKeys {
-    NSMutableArray<KeyItem *> *items = [NSMutableArray array];
-    for (short i = 0; i < 12; i++) {
-        [items addObject:[KeyItem key:[NSString stringWithFormat:@"F%d", i + 1] code:0x70 + i]];
-    }
-    return [KeyGroup groupWithItems:items];
-}
-
-+ (KeyGroup *)editingKeys {
-    return [KeyGroup groupWithItems:@[
-        [KeyItem key:@"esc" code:0x1B],
-        [KeyItem key:@"tab" code:0x09],
-        [KeyItem key:@"↵" code:0x0D],
+        [KeyItem key:@"⌫" code:0x08],
         [KeyItem key:@"⌦" code:0x2E],
+        [KeyItem key:@"Esc" code:0x1B],
+        chord(@"A", 0x41),
+        chord(@"C", 0x43),
+        chord(@"X", 0x58),
+        chord(@"V", 0x56),
+        chord(@"Z", 0x5A),
     ]];
 }
 
-/// Home, End and the two paging keys. Last but one in the row: nothing here is used often
-/// enough to sit in front of the tmux commands.
-+ (KeyGroup *)navigationKeys {
+/// The wheel.
+///
+/// Positive clicks scroll towards the top of the document — the same direction Moonlight's own
+/// two-finger pan sends when it is dragged downwards. Three clicks is roughly a few lines,
+/// which is what the panel settled on.
++ (KeyGroup *)scrollGroup {
     return [KeyGroup groupWithItems:@[
-        [KeyItem key:@"↖" code:0x24],
-        [KeyItem key:@"↘" code:0x23],
-        [KeyItem key:@"⇞" code:0x21],
-        [KeyItem key:@"⇟" code:0x22],
+        [KeyItem scroll:@"∧" clicks:3],
+        [KeyItem scroll:@"∨" clicks:-3],
+    ]];
+}
+
+/// Window and desktop navigation. Multi-finger gestures cannot be produced at all from here,
+/// so these are their keyboard equivalents — which is what the gestures trigger anyway.
++ (KeyGroup *)systemGroupForHost:(KeyMacroHost)host {
+    if (host == KeyMacroHostMacOS) {
+        UIKeyModifierFlags cmd = UIKeyModifierCommand;
+        UIKeyModifierFlags ctrl = UIKeyModifierControl;
+        return [KeyGroup groupWithItems:@[
+            [KeyItem macro:@"⌘Tab" code:0x09 flags:cmd],
+            [KeyItem macro:@"⇧⌘Tab" code:0x09 flags:cmd | UIKeyModifierShift],
+            [KeyItem macro:@"⌘`" code:0xC0 flags:cmd],
+            [KeyItem macro:@"⌘W" code:0x57 flags:cmd],
+            [KeyItem macro:@"⌘Q" code:0x51 flags:cmd],
+            [KeyItem macro:@"⌘H" code:0x48 flags:cmd],
+            [KeyItem macro:@"⌘M" code:0x4D flags:cmd],
+            [KeyItem macro:@"⌃⌘F" code:0x46 flags:cmd | ctrl],
+            [KeyItem macro:@"⌃←" code:0x25 flags:ctrl],
+            [KeyItem macro:@"⌃→" code:0x27 flags:ctrl],
+            [KeyItem macro:@"⌃↑" code:0x26 flags:ctrl],
+            [KeyItem macro:@"⌃↓" code:0x28 flags:ctrl],
+            [KeyItem macro:@"⌘Spc" code:0x20 flags:cmd],
+            [KeyItem macro:@"⇧⌘4" code:0x34 flags:cmd | UIKeyModifierShift],
+        ]];
+    }
+
+    // Standard Windows shortcuts rather than ones proven in use, which is a weaker basis than
+    // the macOS set and worth saying so. UIKeyModifierCommand is the Windows key here.
+    UIKeyModifierFlags win = UIKeyModifierCommand;
+    return [KeyGroup groupWithItems:@[
+        [KeyItem macro:@"⎇Tab" code:0x09 flags:UIKeyModifierAlternate],
+        [KeyItem macro:@"⎇F4" code:0x73 flags:UIKeyModifierAlternate],
+        [KeyItem macro:@"⊞Tab" code:0x09 flags:win],
+        [KeyItem macro:@"⊞D" code:0x44 flags:win],
+        [KeyItem macro:@"⊞E" code:0x45 flags:win],
+        [KeyItem macro:@"⊞L" code:0x4C flags:win],
+        [KeyItem macro:@"⊞" code:0x5B flags:0],
+        [KeyItem macro:@"⌃⇧Esc" code:0x1B flags:UIKeyModifierControl | UIKeyModifierShift],
+        [KeyItem macro:@"⊞⇧S" code:0x53 flags:win | UIKeyModifierShift],
     ]];
 }
 
@@ -131,140 +197,38 @@
     return host == KeyMacroHostMacOS ? [self macOSGroups] : [self windowsGroups];
 }
 
-/// The macOS action set is not designed here: it is what TraceRecorder's Quick Input panel
-/// ended up with after daily use, help text and all, relabelled from chords to what they do.
 + (NSArray<KeyGroup *> *)macOSGroups {
     static NSArray<KeyGroup *> *groups;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        // The left thumb gets a plain keyboard — modifiers, esc/tab/return/delete, arrows —
-        // and the right thumb gets tmux, which is what this is driven with every day. Both
-        // fit above the system keyboard without scrolling.
-        NSArray<KeyGroup *> *tmux = [self tmuxGroups];
-        tmux.firstObject.startsSecondColumn = YES;
+        // The left thumb gets tmux and the input source — what this is driven with every day,
+        // all of it above the system keyboard without scrolling. The right thumb gets the
+        // wheel and system navigation.
+        KeyGroup *scroll = [self scrollGroup];
+        scroll.startsSecondColumn = YES;
 
-        groups = [@[
-            [self modifiersForHost:KeyMacroHostMacOS],
-            [self editingKeys],
-            [self arrows],
-        ] arrayByAddingObjectsFromArray:tmux];
-
-        groups = [groups arrayByAddingObjectsFromArray:@[
-            [self clipboardForHost:KeyMacroHostMacOS],
-            [KeyGroup groupWithItems:@[
-                [KeyItem macro:@"Switch App" code:0x09 flags:UIKeyModifierCommand],
-                [KeyItem macro:@"Windows" code:0xC0 flags:UIKeyModifierCommand],
-                [KeyItem macro:@"Close" code:0x57 flags:UIKeyModifierCommand],
-                [KeyItem macro:@"Quit" code:0x51 flags:UIKeyModifierCommand],
-                [KeyItem macro:@"Hide" code:0x48 flags:UIKeyModifierCommand],
-                [KeyItem macro:@"Minimise" code:0x4D flags:UIKeyModifierCommand],
-                [KeyItem macro:@"Full Screen" code:0x46
-                          flags:UIKeyModifierCommand | UIKeyModifierControl],
-            ]],
-            [KeyGroup groupWithItems:@[
-                [KeyItem macro:@"Mission Control" code:0x26 flags:UIKeyModifierControl],
-                [KeyItem macro:@"App Exposé" code:0x28 flags:UIKeyModifierControl],
-                [KeyItem macro:@"Desktop ←" code:0x25 flags:UIKeyModifierControl],
-                [KeyItem macro:@"Desktop →" code:0x27 flags:UIKeyModifierControl],
-                [KeyItem macro:@"Spotlight" code:0x20 flags:UIKeyModifierCommand],
-                [KeyItem macro:@"Screenshot" code:0x34
-                          flags:UIKeyModifierCommand | UIKeyModifierShift],
-            ]],
-            [self navigationKeys],
-            [KeyGroup groupWithItems:@[
-                [KeyItem key:@"ins" code:0x2D],
-                [KeyItem key:@"Pause" code:0x13],
-                [KeyItem key:@"Break" code:0x03],
-            ]],
-            [self functionKeys],
-        ]];
+        groups = @[
+            [self tmuxGroup],
+            [self inputSourceGroup],
+            [self textKeysForHost:KeyMacroHostMacOS],
+            scroll,
+            [self systemGroupForHost:KeyMacroHostMacOS],
+        ];
     });
     return groups;
 }
 
-/// tmux and every other prefix-key program need a sequence, not a chord: Control-A, released,
-/// then the command key. Assembling that from the bar by hand does not work either, because a
-/// one-shot modifier is consumed by the next bar key and the letter comes from the system
-/// keyboard instead.
-///
-/// Kept to what Harrison actually drives: zoom a pane, one toggle, and moving the focus
-/// between panes. tmux has dozens of bindings and none of the rest were being used.
-///
-/// The prefix is Control-A rather than tmux's default Control-B, which is what he binds.
-+ (NSArray<KeyGroup *> *)tmuxGroups {
-    KeyStep *prefix = [KeyStep step:0x41 modifiers:UIKeyModifierControl];  // Control-A
-    KeyItem *(^command)(NSString *, short) = ^KeyItem *(NSString *label, short key) {
-        return [KeyItem sequence:label steps:@[prefix, [KeyStep step:key modifiers:0]]];
-    };
-
-    return @[
-        [KeyGroup groupWithItems:@[
-            command(@"Zoom", 0x5A),
-            // prefix b toggles synchronize-panes, so typing goes to every pane in the window
-            // at once. Harrison's binding turns the tmux status bar red while it is on.
-            command(@"Sync", 0x42),
-            // Prefix then an arrow moves the focus between panes. Spelled out rather than
-            // labelled with a bare arrow: in one row these sit near the plain arrow keys, and
-            // two keys reading "←" that do different things is the ambiguity that makes a bar
-            // untrustworthy. It is also what the pin and hide list keys off.
-            command(@"⌃A←", 0x25),
-            command(@"⌃A↓", 0x28),
-            command(@"⌃A↑", 0x26),
-            command(@"⌃A→", 0x27),
-        ]],
-        // None of the above reaches tmux while the host is composing in a Chinese input
-        // source: the Control chord gets through but the command key that follows is eaten
-        // by the composition. This is here so the fix is one tap away.
-        //
-        // It is not sent automatically before every command, because Control-Space toggles
-        // rather than selects — firing it blindly would switch a host that was already in
-        // English into Chinese, breaking the thing it was meant to protect.
-        //
-        // macOS switches input source on Control-Space by default. TraceRecorder labels this
-        // 中/A, which says what it does better than the chord does.
-        [KeyGroup groupWithItems:@[
-            [KeyItem macro:@"中/A" code:0x20 flags:UIKeyModifierControl],
-        ]],
-    ];
-}
-
-/// The Windows equivalents. Standard shortcuts rather than ones proven in use, which is a
-/// weaker basis than the macOS set and worth saying so.
 + (NSArray<KeyGroup *> *)windowsGroups {
     static NSArray<KeyGroup *> *groups;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        // No tmux here, so the break falls where the plain keys end.
-        KeyGroup *clipboard = [self clipboardForHost:KeyMacroHostWindows];
-        clipboard.startsSecondColumn = YES;
+        KeyGroup *scroll = [self scrollGroup];
+        scroll.startsSecondColumn = YES;
 
         groups = @[
-            [self modifiersForHost:KeyMacroHostWindows],
-            [self editingKeys],
-            [self arrows],
-            clipboard,
-            [KeyGroup groupWithItems:@[
-                [KeyItem macro:@"Switch App" code:0x09 flags:UIKeyModifierAlternate],
-                [KeyItem macro:@"Close" code:0x73 flags:UIKeyModifierAlternate],
-                [KeyItem macro:@"Desktop" code:0x44 flags:UIKeyModifierCommand],
-                [KeyItem macro:@"Explorer" code:0x45 flags:UIKeyModifierCommand],
-                [KeyItem macro:@"Lock" code:0x4C flags:UIKeyModifierCommand],
-                [KeyItem macro:@"Start" code:0x5B flags:0],
-            ]],
-            [KeyGroup groupWithItems:@[
-                [KeyItem macro:@"Task Manager" code:0x1B
-                          flags:UIKeyModifierControl | UIKeyModifierShift],
-                [KeyItem macro:@"Game Bar" code:0x47 flags:UIKeyModifierCommand],
-                [KeyItem macro:@"Screenshot" code:0x53
-                          flags:UIKeyModifierCommand | UIKeyModifierShift],
-            ]],
-            [self navigationKeys],
-            [KeyGroup groupWithItems:@[
-                [KeyItem key:@"ins" code:0x2D],
-                [KeyItem key:@"Pause" code:0x13],
-                [KeyItem key:@"Break" code:0x03],
-            ]],
-            [self functionKeys],
+            [self textKeysForHost:KeyMacroHostWindows],
+            scroll,
+            [self systemGroupForHost:KeyMacroHostWindows],
         ];
     });
     return groups;
@@ -361,36 +325,28 @@ static NSString *KeyProfileDefaultsKey(NSString *profileKey, NSString *field) {
     }
 
     NSMutableArray<KeyGroup *> *groups = [NSMutableArray array];
-    BOOL modifiersPlaced = NO;
 
-    // Pinned items go to the near end of the row, right after the modifiers. That is the whole
-    // of what pinning means now: there is one row, so "your own page" is "first under the thumb".
+    // Pinned items lead the left column. That is the whole of what pinning means: there is one
+    // list, so "your own page" is "first under the thumb".
     if (pinned.count > 0) {
         NSMutableArray<KeyItem *> *items = [NSMutableArray array];
         for (NSString *label in pinned) {
             KeyItem *item = byLabel[label];
-            if (item != nil && item.kind != KeyItemKindModifier) {
+            if (item != nil) {
                 [items addObject:item];
             }
         }
         if (items.count > 0) {
-            [groups addObject:[self modifiersForHost:host]];
             [groups addObject:[KeyGroup groupWithItems:items]];
-            modifiersPlaced = YES;
         }
     }
 
     for (KeyGroup *group in base) {
         NSMutableArray<KeyItem *> *items = [NSMutableArray array];
         for (KeyItem *item in group.items) {
-            if (item.kind == KeyItemKindModifier) {
-                // Modifiers are never hidden and appear exactly once, at the front.
-                if (!modifiersPlaced) {
-                    [items addObject:item];
-                }
-            } else if (![hidden containsObject:item.label]) {
-                // A pinned item keeps its original place too, so muscle memory built before
-                // pinning still works.
+            // A pinned item keeps its original place too, so muscle memory built before
+            // pinning still works.
+            if (![hidden containsObject:item.label]) {
                 [items addObject:item];
             }
         }
