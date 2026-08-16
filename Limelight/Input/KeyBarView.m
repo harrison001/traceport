@@ -148,16 +148,23 @@ static const CGFloat rowHorizontalInset = 12;
 /// editing keys, then the arrows. The separation is what makes a group findable at a glance,
 /// without reading any of the labels.
 - (void)populateKeys {
+    BOOL macHost = [KeyMacros defaultHost] == KeyMacroHostMacOS;
+
+    // RealVNC offers Command and the Windows key side by side, because it cannot know which
+    // host it is driving either. Showing both is the cognitive cost of not knowing; we show
+    // the one that belongs to the host instead.
     [self addKeyWithTitle:@"⇧" kind:KeyBarKeyKindModifier virtualKey:0xA0 modifierMask:MODIFIER_SHIFT];
     [self addKeyWithTitle:@"⌃" kind:KeyBarKeyKindModifier virtualKey:0xA2 modifierMask:MODIFIER_CTRL];
-    [self addKeyWithTitle:@"⌥" kind:KeyBarKeyKindModifier virtualKey:0xA4 modifierMask:MODIFIER_ALT];
-    [self addKeyWithTitle:@"⌘" kind:KeyBarKeyKindModifier virtualKey:0x5B modifierMask:MODIFIER_META];
+    [self addKeyWithTitle:macHost ? @"⌥" : @"alt" kind:KeyBarKeyKindModifier virtualKey:0xA4 modifierMask:MODIFIER_ALT];
+    [self addKeyWithTitle:macHost ? @"⌘" : @"⊞" kind:KeyBarKeyKindModifier virtualKey:0x5B modifierMask:MODIFIER_META];
 
     [self addGroupSeparator];
 
     [self addKeyWithTitle:@"esc" kind:KeyBarKeyKindNormal virtualKey:0x1B modifierMask:0];
     [self addKeyWithTitle:@"tab" kind:KeyBarKeyKindNormal virtualKey:0x09 modifierMask:0];
     [self addKeyWithTitle:@"⌦" kind:KeyBarKeyKindNormal virtualKey:0x2E modifierMask:0];
+    [self addKeyWithTitle:@"ins" kind:KeyBarKeyKindNormal virtualKey:0x2D modifierMask:0];
+    [self addKeyWithTitle:@"↵" kind:KeyBarKeyKindNormal virtualKey:0x0D modifierMask:0];
 
     [self addGroupSeparator];
 
@@ -166,6 +173,28 @@ static const CGFloat rowHorizontalInset = 12;
     [self addKeyWithTitle:@"↓" kind:KeyBarKeyKindNormal virtualKey:0x28 modifierMask:0];
     [self addKeyWithTitle:@"↑" kind:KeyBarKeyKindNormal virtualKey:0x26 modifierMask:0];
     [self addKeyWithTitle:@"→" kind:KeyBarKeyKindNormal virtualKey:0x27 modifierMask:0];
+
+    [self addGroupSeparator];
+
+    [self addKeyWithTitle:@"↖" kind:KeyBarKeyKindNormal virtualKey:0x24 modifierMask:0];
+    [self addKeyWithTitle:@"↘" kind:KeyBarKeyKindNormal virtualKey:0x23 modifierMask:0];
+    [self addKeyWithTitle:@"⇞" kind:KeyBarKeyKindNormal virtualKey:0x21 modifierMask:0];
+    [self addKeyWithTitle:@"⇟" kind:KeyBarKeyKindNormal virtualKey:0x22 modifierMask:0];
+
+    [self addGroupSeparator];
+
+    // VK_F1 through VK_F12 are consecutive from 0x70.
+    for (short i = 0; i < 12; i++) {
+        [self addKeyWithTitle:[NSString stringWithFormat:@"F%d", i + 1]
+                         kind:KeyBarKeyKindNormal
+                   virtualKey:0x70 + i
+                 modifierMask:0];
+    }
+
+    [self addGroupSeparator];
+
+    [self addKeyWithTitle:@"Pause" kind:KeyBarKeyKindNormal virtualKey:0x13 modifierMask:0];
+    [self addKeyWithTitle:@"Break" kind:KeyBarKeyKindNormal virtualKey:0x03 modifierMask:0];
 
     [self addGroupSeparator];
 
