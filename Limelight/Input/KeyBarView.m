@@ -60,8 +60,35 @@ static const CGFloat rowHorizontalInset = 12;
 @implementation KeyBarButton
 @end
 
+/// Key faces have to be lighter than the bar behind them in both appearances, the way the
+/// system keyboard does it. The semantic greys do not give that: in dark mode the "grouped
+/// background" colours collapse into the bar and the keys vanish, leaving bare labels.
+static UIColor *KeyBarColor(CGFloat lightWhite, CGFloat darkWhite) {
+    return [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *traits) {
+        CGFloat white = traits.userInterfaceStyle == UIUserInterfaceStyleDark ? darkWhite : lightWhite;
+        return [UIColor colorWithWhite:white alpha:1.0];
+    }];
+}
+
+static UIColor *KeyBarBackgroundColor(void) {
+    return KeyBarColor(0.87, 0.14);
+}
+
+/// Normal keys read as the white keys on RealVNC's bar.
+static UIColor *KeyBarNormalKeyColor(void) {
+    return KeyBarColor(1.00, 0.38);
+}
+
+/// Modifiers recede, as they do there.
+static UIColor *KeyBarModifierKeyColor(void) {
+    return KeyBarColor(0.74, 0.26);
+}
+
 @implementation KeyBarView {
+    /// Scrolls: the keys themselves.
     UIStackView *_row;
+    /// Does not scroll: the controls, which must stay reachable however far the keys scroll.
+    UIStackView *_controls;
     NSMutableArray<KeyBarButton *> *_modifierButtons;
     KeyBarButton *_keyboardToggle;
 }
@@ -96,7 +123,7 @@ static const CGFloat rowHorizontalInset = 12;
 
     _modifierButtons = [NSMutableArray array];
 
-    self.backgroundColor = [UIColor secondarySystemBackgroundColor];
+    self.backgroundColor = KeyBarBackgroundColor();
 
     UIScrollView *scrollView = [[UIScrollView alloc] initWithFrame:CGRectZero];
     scrollView.translatesAutoresizingMaskIntoConstraints = NO;
@@ -114,11 +141,26 @@ static const CGFloat rowHorizontalInset = 12;
                                           rowVerticalInset, rowHorizontalInset);
     [scrollView addSubview:_row];
 
+    // Controls live outside the scroll view. With thirty-odd keys, anything inside it can end
+    // up several swipes away, and dismissing the bar should never require hunting for the key.
+    _controls = [[UIStackView alloc] initWithFrame:CGRectZero];
+    _controls.translatesAutoresizingMaskIntoConstraints = NO;
+    _controls.axis = UILayoutConstraintAxisHorizontal;
+    _controls.spacing = keySpacing;
+    _controls.layoutMarginsRelativeArrangement = YES;
+    _controls.layoutMargins = UIEdgeInsetsMake(rowVerticalInset, keySpacing,
+                                               rowVerticalInset, rowHorizontalInset);
+    [self addSubview:_controls];
+
     [NSLayoutConstraint activateConstraints:@[
         [scrollView.leadingAnchor constraintEqualToAnchor:self.safeAreaLayoutGuide.leadingAnchor],
-        [scrollView.trailingAnchor constraintEqualToAnchor:self.safeAreaLayoutGuide.trailingAnchor],
+        [scrollView.trailingAnchor constraintEqualToAnchor:_controls.leadingAnchor],
         [scrollView.topAnchor constraintEqualToAnchor:self.topAnchor],
         [scrollView.bottomAnchor constraintEqualToAnchor:self.bottomAnchor],
+
+        [_controls.trailingAnchor constraintEqualToAnchor:self.safeAreaLayoutGuide.trailingAnchor],
+        [_controls.topAnchor constraintEqualToAnchor:self.topAnchor],
+        [_controls.bottomAnchor constraintEqualToAnchor:self.bottomAnchor],
 
         [_row.leadingAnchor constraintEqualToAnchor:scrollView.contentLayoutGuide.leadingAnchor],
         [_row.trailingAnchor constraintEqualToAnchor:scrollView.contentLayoutGuide.trailingAnchor],
@@ -126,6 +168,11 @@ static const CGFloat rowHorizontalInset = 12;
         [_row.bottomAnchor constraintEqualToAnchor:scrollView.contentLayoutGuide.bottomAnchor],
         [_row.heightAnchor constraintEqualToAnchor:scrollView.frameLayoutGuide.heightAnchor],
     ]];
+
+    // The keys must yield to the controls, never the other way round.
+    [_controls setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+    [_controls setContentCompressionResistancePriority:UILayoutPriorityRequired
+                                               forAxis:UILayoutConstraintAxisHorizontal];
 
     [self populateKeys];
 
@@ -196,19 +243,22 @@ static const CGFloat rowHorizontalInset = 12;
     [self addKeyWithTitle:@"Pause" kind:KeyBarKeyKindNormal virtualKey:0x13 modifierMask:0];
     [self addKeyWithTitle:@"Break" kind:KeyBarKeyKindNormal virtualKey:0x03 modifierMask:0];
 
-    [self addGroupSeparator];
+    [self populateControls];
+}
 
+/// The three controls that never scroll away.
+- (void)populateControls {
     [self addMacroButton];
-    _keyboardToggle = [self addKeyWithTitle:@"⌨" kind:KeyBarKeyKindKeyboardToggle virtualKey:0 modifierMask:0];
-    [self addKeyWithTitle:@"Done" kind:KeyBarKeyKindDismiss virtualKey:0 modifierMask:0];
+    _keyboardToggle = [self addKeyWithTitle:@"⌨" kind:KeyBarKeyKindKeyboardToggle
+                                 virtualKey:0 modifierMask:0 toStack:_controls];
+    [self addKeyWithTitle:@"Done" kind:KeyBarKeyKindDismiss
+               virtualKey:0 modifierMask:0 toStack:_controls];
 }
 
 - (void)setSystemKeyboardVisible:(BOOL)visible {
     // Struck through when tapping it would bring the keyboard back.
     [_keyboardToggle setTitle:visible ? @"⌨" : @"⌨̶" forState:UIControlStateNormal];
-    _keyboardToggle.backgroundColor = visible
-        ? [UIColor secondarySystemGroupedBackgroundColor]
-        : [UIColor systemGray3Color];
+    _keyboardToggle.backgroundColor = visible ? KeyBarNormalKeyColor() : KeyBarModifierKeyColor();
 }
 
 /// One button opening a menu of named actions, rather than a dozen more keys.
@@ -223,7 +273,7 @@ static const CGFloat rowHorizontalInset = 12;
     button.titleLabel.font = [UIFont systemFontOfSize:[KeyBarView isPad] ? 22 : 19
                                                weight:UIFontWeightMedium];
     button.layer.cornerRadius = 8;
-    button.backgroundColor = [UIColor secondarySystemGroupedBackgroundColor];
+    button.backgroundColor = KeyBarNormalKeyColor();
     button.tintColor = [UIColor labelColor];
     [button.heightAnchor constraintEqualToConstant:[KeyBarView keyHeight]].active = YES;
     [button.widthAnchor constraintEqualToConstant:[KeyBarView keyWidth]].active = YES;
@@ -259,6 +309,14 @@ static const CGFloat rowHorizontalInset = 12;
                              kind:(KeyBarKeyKind)kind
                        virtualKey:(short)virtualKey
                      modifierMask:(char)modifierMask {
+    return [self addKeyWithTitle:title kind:kind virtualKey:virtualKey modifierMask:modifierMask toStack:_row];
+}
+
+- (KeyBarButton *)addKeyWithTitle:(NSString *)title
+                             kind:(KeyBarKeyKind)kind
+                       virtualKey:(short)virtualKey
+                     modifierMask:(char)modifierMask
+                          toStack:(UIStackView *)stack {
     KeyBarButton *button = [KeyBarButton buttonWithType:UIButtonTypeSystem];
     button.kind = kind;
     button.virtualKey = virtualKey;
@@ -287,7 +345,7 @@ static const CGFloat rowHorizontalInset = 12;
     }
 
     [self applyAppearance:button];
-    [_row addArrangedSubview:button];
+    [stack addArrangedSubview:button];
 
     return button;
 }
@@ -298,8 +356,8 @@ static const CGFloat rowHorizontalInset = 12;
             // Resting colour encodes the kind of key, as RealVNC does: modifiers read as grey
             // and everything else as white, so the bar is scannable by shade alone.
             button.backgroundColor = button.kind == KeyBarKeyKindModifier
-                ? [UIColor systemGray3Color]
-                : [UIColor secondarySystemGroupedBackgroundColor];
+                ? KeyBarModifierKeyColor()
+                : KeyBarNormalKeyColor();
             button.layer.borderWidth = 0;
             break;
         case KeyBarModifierStateOneShot:
