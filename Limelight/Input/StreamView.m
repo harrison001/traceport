@@ -905,6 +905,14 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
 }
 
 - (void)onKeyboardPressed:(UITextField *)textField {
+    // While an input method is composing, the field holds the composition in progress rather
+    // than anything the user has committed. Sending it types the pinyin letters one by one and
+    // then the characters they turn into, which is why typing Chinese produced nonsense.
+    // Wait for the commit; UIKit clears markedTextRange then and this fires again.
+    if (textField.markedTextRange != nil) {
+        return;
+    }
+
     NSString* inputText = textField.text;
 #if !TARGET_OS_TV
     // A modifier armed on the key bar applies to this keystroke and then stops, exactly as it
