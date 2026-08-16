@@ -580,7 +580,10 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
         
     CMSampleBufferRef sampleBuffer;
     
-    CMSampleTimingInfo sampleTiming = {kCMTimeInvalid, CMTimeMake(du->presentationTimeMs, 1000), kCMTimeInvalid};
+    // presentationTimeMs was replaced by presentationTimeUs upstream. Use the raw 90 kHz RTP
+    // timestamp instead, as Limelight.h recommends for integer time APIs like CMTime: it
+    // recovers the sender's timestamp exactly, with no rounding to milliseconds.
+    CMSampleTimingInfo sampleTiming = {kCMTimeInvalid, CMTimeMake((int64_t)du->rtpTimestamp, 90000), kCMTimeInvalid};
     
     status = CMSampleBufferCreateReady(kCFAllocatorDefault,
                                   frameBlockBuffer,
