@@ -183,6 +183,7 @@ typedef NS_ENUM(NSInteger, KeyBarLayout) {
     UIStackView *_controls;
 
     KeyBarLayout _layout;
+    KeyBarContent _content;
     CGFloat _marginWidth;
 
     NSArray<KeyGroup *> *_groups;
@@ -227,10 +228,13 @@ typedef NS_ENUM(NSInteger, KeyBarLayout) {
 }
 
 - (instancetype)initWithFrame:(CGRect)frame {
-    return [self initWithFrame:frame hostKey:nil appName:nil];
+    return [self initWithFrame:frame hostKey:nil appName:nil content:KeyBarContentBoth];
 }
 
-- (instancetype)initWithFrame:(CGRect)frame hostKey:(NSString *)hostKey appName:(NSString *)appName {
+- (instancetype)initWithFrame:(CGRect)frame
+                      hostKey:(NSString *)hostKey
+                      appName:(NSString *)appName
+                      content:(KeyBarContent)content {
     self = [super initWithFrame:frame];
     if (self == nil) {
         return nil;
@@ -242,8 +246,10 @@ typedef NS_ENUM(NSInteger, KeyBarLayout) {
         : [hostKey copy];
     _axis = UILayoutConstraintAxisHorizontal;
     _layout = KeyBarLayoutLine;
+    _content = content;
+    _showsControls = YES;
     _modifierButtons = [NSMutableArray array];
-    _groups = [KeyMacros groupsForHost:[KeyMacros hostKindForKey:_hostKey] profileKey:_profileKey];
+    _groups = [self currentGroups];
 
     self.backgroundColor = [UIColor clearColor];
 
@@ -359,18 +365,22 @@ typedef NS_ENUM(NSInteger, KeyBarLayout) {
             foot = self.keyboardLayoutGuide.topAnchor;
         }
 
-        // Flush with the screen edge, not the safe area. In landscape iOS reports a 59pt inset
-        // down both sides; obeying it pushes each column 59pt inwards, which is 59pt onto the
-        // picture — the one place they must not be. The letterbox is the margin, so the columns
-        // are exactly as wide as it is and sit entirely inside it.
+        // Outer edge on the safe area, inner edge on the letterbox boundary. Both matter and
+        // they are different things: the Dynamic Island sits on one side edge in landscape and
+        // is not touchable — iOS reports its 59pt inset down both sides — while the letterbox
+        // boundary is where the picture starts and must not be covered. Pinning the width to
+        // the difference is what keeps the column inside both at once, and it needs no constant
+        // to update when the insets change.
         _layoutConstraints = [@[
-            [_secondary.leadingAnchor constraintEqualToAnchor:self.leadingAnchor],
-            [_secondary.widthAnchor constraintEqualToConstant:_marginWidth],
+            [_secondary.leadingAnchor constraintEqualToAnchor:self.safeAreaLayoutGuide.leadingAnchor],
+            [_secondary.trailingAnchor constraintEqualToAnchor:self.leadingAnchor
+                                                      constant:_marginWidth],
             [_secondary.topAnchor constraintEqualToAnchor:self.safeAreaLayoutGuide.topAnchor],
             [_secondary.bottomAnchor constraintEqualToAnchor:foot],
 
-            [_primary.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
-            [_primary.widthAnchor constraintEqualToConstant:_marginWidth],
+            [_primary.trailingAnchor constraintEqualToAnchor:self.safeAreaLayoutGuide.trailingAnchor],
+            [_primary.leadingAnchor constraintEqualToAnchor:self.trailingAnchor
+                                                   constant:-_marginWidth],
             [_primary.topAnchor constraintEqualToAnchor:self.safeAreaLayoutGuide.topAnchor],
             [_primary.bottomAnchor constraintEqualToAnchor:foot],
 
@@ -382,10 +392,10 @@ typedef NS_ENUM(NSInteger, KeyBarLayout) {
             [_secondaryControls.trailingAnchor constraintEqualToAnchor:_secondary.trailingAnchor],
             [_secondaryControls.bottomAnchor constraintEqualToAnchor:_secondary.safeAreaLayoutGuide.bottomAnchor],
         ] arrayByAddingObjectsFromArray:
-            [self constraintsForPanel:_primary above:_controls.topAnchor]];
+            [self constraintsForPanel:_primary above:(_showsControls ? _controls.topAnchor : nil)]];
 
         _layoutConstraints = [_layoutConstraints arrayByAddingObjectsFromArray:
-            [self constraintsForPanel:_secondary above:_secondaryControls.topAnchor]];
+            [self constraintsForPanel:_secondary above:(_showsControls ? _secondaryControls.topAnchor : nil)]];
     }
     else {
         _secondary.hidden = YES;
@@ -408,8 +418,8 @@ typedef NS_ENUM(NSInteger, KeyBarLayout) {
 
         _layoutConstraints = [_layoutConstraints arrayByAddingObjectsFromArray:
             [self constraintsForPanel:_primary
-                                above:horizontal ? nil : _controls.topAnchor
-                               before:horizontal ? _controls.leadingAnchor : nil]];
+                                above:(horizontal || !_showsControls) ? nil : _controls.topAnchor
+                               before:(horizontal && _showsControls) ? _controls.leadingAnchor : nil]];
     }
 
     [NSLayoutConstraint activateConstraints:_layoutConstraints];
@@ -549,8 +559,25 @@ typedef NS_ENUM(NSInteger, KeyBarLayout) {
 /// the system keyboard, and half the keys — the modifiers, the arrows, the tmux commands — are
 /// labelled with two or three characters and waste most of a 139pt row. Long macro names like
 /// "Mission Control" still take the full width, so nothing is truncated to fit.
+/// How wide a column actually is: the letterbox less whatever the safe area takes off the
+/// outer edge. Zero until the view is in a window, which is why the row is rebuilt when the
+/// insets arrive.
+- (CGFloat)columnWidth {
+    CGFloat inset = MAX(self.safeAreaInsets.left, self.safeAreaInsets.right);
+    return MAX(_marginWidth - inset, [KeyBarView keyWidth]);
+}
+
+/// The safe area is not known until the view is in a window, and it changes on rotation. Both
+/// move the column edges, and how many keys fit on a row follows from that.
+- (void)safeAreaInsetsDidChange {
+    [super safeAreaInsetsDidChange];
+    if (_layout == KeyBarLayoutSplit) {
+        [self buildRow];
+    }
+}
+
 - (NSArray<NSArray<KeyItem *> *> *)packItems:(NSArray<KeyItem *> *)items {
-    CGFloat inner = _marginWidth - rowVerticalInset * 2;
+    CGFloat inner = [self columnWidth] - rowVerticalInset * 2;
     CGFloat half = (inner - keySpacing) / 2;
     UIFont *font = [UIFont systemFontOfSize:[KeyBarView isPad] ? 19 : 16 weight:UIFontWeightMedium];
 
@@ -647,12 +674,35 @@ typedef NS_ENUM(NSInteger, KeyBarLayout) {
 
 #pragma mark - Building
 
+/// Set after init, so the controls are torn down and rebuilt rather than filtered at birth.
+- (void)setShowsControls:(BOOL)showsControls {
+    if (_showsControls == showsControls) {
+        return;
+    }
+    _showsControls = showsControls;
+    for (UIView *view in _controls.arrangedSubviews) {
+        [view removeFromSuperview];
+    }
+    for (UIView *view in _secondaryControls.arrangedSubviews) {
+        [view removeFromSuperview];
+    }
+    _settingsButton = nil;
+    _keyboardToggle = nil;
+    _doneButton = nil;
+    [self buildControls];
+    [self applyLayoutConstraints];
+}
+
 - (void)buildControls {
+    if (!_showsControls) {
+        return;
+    }
+
     // Which operating system the host runs is the one thing that has to be reachable and has
     // nowhere else to live. A single tap opens it; it is not something anyone sets twice.
     _settingsButton = [self buttonWithTitle:@"⋯" wide:NO];
     _settingsButton.showsMenuAsPrimaryAction = YES;
-    _settingsButton.menu = [self hostKindMenu];
+    _settingsButton.menu = [self settingsMenu];
     [_controls addArrangedSubview:_settingsButton];
 
     _keyboardToggle = [self buttonWithTitle:@"⌨" wide:NO];
@@ -728,12 +778,12 @@ typedef NS_ENUM(NSInteger, KeyBarLayout) {
 
     if (item.kind == KeyItemKindModifier) {
         [_modifierButtons addObject:button];
-    } else {
-        // Long press to make the bar your own. Termius and Stream Deck both let the user decide
+    } else if (item.detail != nil) {
+        // Long press to make the pad your own. Termius and Stream Deck both let the user decide
         // what is on the surface; Jump Desktop's fixed list is the thing that cannot fit anyone
         // whose habits differ from its author's.
         button.showsMenuAsPrimaryAction = NO;
-        button.menu = [self customisationMenuForItem:item];
+        button.menu = [self padMenuForItem:item];
     }
 
     [self applyAppearance:button];
@@ -940,54 +990,118 @@ typedef NS_ENUM(NSInteger, KeyBarLayout) {
 
 #pragma mark - Controls
 
-/// Long-press menu on a key: move it to the near end of the row, or take it away.
-- (UIMenu *)customisationMenuForItem:(KeyItem *)item {
+/// Long-press menu on a pad key: take it off, or move it nearer the thumb.
+///
+/// Only macros carry a description, and only macros can be on the pad, so that is what decides
+/// whether a key is editable — the keyboard's own keys are not up for negotiation.
+- (UIMenu *)padMenuForItem:(KeyItem *)item {
     __weak KeyBarView *weakSelf = self;
     NSMutableArray<UIMenuElement *> *actions = [NSMutableArray array];
 
-    if (![KeyMacros isPinned:item forProfile:_profileKey]) {
-        [actions addObject:[UIAction actionWithTitle:@"Move to Front"
-                                               image:[UIImage systemImageNamed:@"pin"]
-                                          identifier:nil
-                                             handler:^(__kindof UIAction *sender) {
-            [KeyMacros pinItem:item forProfile:weakSelf.profileKeyForMenu];
-            [weakSelf reloadGroups];
-        }]];
-    }
-
-    [actions addObject:[UIAction actionWithTitle:@"Hide"
-                                           image:[UIImage systemImageNamed:@"eye.slash"]
+    [actions addObject:[UIAction actionWithTitle:@"Move Nearer"
+                                           image:[UIImage systemImageNamed:@"arrow.up"]
                                       identifier:nil
                                          handler:^(__kindof UIAction *sender) {
-        [KeyMacros hideItem:item forProfile:weakSelf.profileKeyForMenu];
+        [KeyMacros promoteOnPad:item forProfile:weakSelf.profileKeyForMenu host:weakSelf.hostKind];
         [weakSelf reloadGroups];
     }]];
 
-    if ([KeyMacros hasCustomisationForProfile:_profileKey]) {
-        UIAction *reset = [UIAction actionWithTitle:@"Reset This Bar"
-                                              image:[UIImage systemImageNamed:@"arrow.uturn.backward"]
-                                         identifier:nil
-                                            handler:^(__kindof UIAction *sender) {
-            [KeyMacros resetProfile:weakSelf.profileKeyForMenu];
-            [weakSelf reloadGroups];
-        }];
-        reset.attributes = UIMenuElementAttributesDestructive;
-        [actions addObject:[UIMenu menuWithTitle:@"" image:nil identifier:nil
-                                         options:UIMenuOptionsDisplayInline children:@[reset]]];
+    UIAction *remove = [UIAction actionWithTitle:@"Remove"
+                                           image:[UIImage systemImageNamed:@"minus.circle"]
+                                      identifier:nil
+                                         handler:^(__kindof UIAction *sender) {
+        [KeyMacros removeFromPad:item forProfile:weakSelf.profileKeyForMenu host:weakSelf.hostKind];
+        [weakSelf reloadGroups];
+    }];
+    remove.attributes = UIMenuElementAttributesDestructive;
+    [actions addObject:remove];
+
+    return [UIMenu menuWithTitle:item.detail ?: item.label children:actions];
+}
+
+/// Everything not already on the pad, grouped the way the catalogue is.
+- (UIMenu *)addToPadMenu {
+    __weak KeyBarView *weakSelf = self;
+    NSMutableSet<NSString *> *onPad = [NSMutableSet set];
+    for (KeyGroup *group in _groups) {
+        for (KeyItem *item in group.items) {
+            [onPad addObject:item.label];
+        }
     }
 
-    return [UIMenu menuWithTitle:item.label children:actions];
+    NSMutableArray<UIMenuElement *> *categories = [NSMutableArray array];
+    for (KeyGroup *group in [KeyMacros macroCatalogueForHost:[self hostKind]]) {
+        NSMutableArray<UIAction *> *choices = [NSMutableArray array];
+        for (KeyItem *item in group.items) {
+            if ([onPad containsObject:item.label]) {
+                continue;
+            }
+            // Label and meaning together: "⌘`" on its own is not something anyone recognises.
+            NSString *title = item.detail.length > 0
+                ? [NSString stringWithFormat:@"%@   %@", item.label, item.detail]
+                : item.label;
+            [choices addObject:[UIAction actionWithTitle:title
+                                                   image:nil
+                                              identifier:nil
+                                                 handler:^(__kindof UIAction *sender) {
+                [KeyMacros addToPad:item forProfile:weakSelf.profileKeyForMenu
+                               host:weakSelf.hostKind];
+                [weakSelf reloadGroups];
+            }]];
+        }
+        if (choices.count > 0) {
+            [categories addObject:[UIMenu menuWithTitle:group.name ?: @""
+                                                  image:nil
+                                             identifier:nil
+                                                options:0
+                                               children:choices]];
+        }
+    }
+
+    return [UIMenu menuWithTitle:@"Add"
+                           image:[UIImage systemImageNamed:@"plus"]
+                      identifier:nil
+                         options:0
+                        children:categories];
 }
 
 - (NSString *)profileKeyForMenu {
     return _profileKey;
 }
 
+/// Where the keys come from, which is the only real difference between the two surfaces.
+///
+/// The pad arrives as one list and is cut in half so the two columns are the same length. The
+/// keyboard arrives already grouped, and its groups are what the wide separators mark.
+- (NSArray<KeyGroup *> *)currentGroups {
+    KeyMacroHost host = [KeyMacros hostKindForKey:_hostKey];
+
+    NSMutableArray<KeyGroup *> *groups = [NSMutableArray array];
+    if (_content != KeyBarContentPad) {
+        [groups addObjectsFromArray:[KeyMacros keyboardGroupsForHost:host]];
+    }
+    if (_content != KeyBarContentKeyboard) {
+        NSArray<KeyItem *> *pad = [KeyMacros padItemsForHost:host profileKey:_profileKey];
+        if (_content == KeyBarContentPad && pad.count > 1) {
+            NSUInteger half = (pad.count + 1) / 2;
+            KeyGroup *second = [KeyGroup groupWithItems:[pad subarrayWithRange:
+                                    NSMakeRange(half, pad.count - half)]];
+            second.startsSecondColumn = YES;
+            [groups addObject:[KeyGroup groupWithItems:
+                               [pad subarrayWithRange:NSMakeRange(0, half)]]];
+            [groups addObject:second];
+        } else if (pad.count > 0) {
+            [groups addObject:[KeyGroup groupWithItems:pad]];
+        }
+    }
+    return groups;
+}
+
 - (void)reloadGroups {
-    _groups = [KeyMacros groupsForHost:[KeyMacros hostKindForKey:_hostKey] profileKey:_profileKey];
+    _groups = [self currentGroups];
     [self buildRow];
     // Rebuilt rather than left alone: the menu carries the tick showing which host kind is set.
-    _settingsButton.menu = [self hostKindMenu];
+    _settingsButton.menu = [self settingsMenu];
 }
 
 /// Which operating system this host runs. It decides the modifier labels and the whole action
@@ -1011,17 +1125,48 @@ typedef NS_ENUM(NSInteger, KeyBarLayout) {
         [actions addObject:action];
     }
 
+    return [UIMenu menuWithTitle:@"Host runs"
+                           image:nil
+                      identifier:nil
+                         options:UIMenuOptionsDisplayInline
+                        children:actions];
+}
+
+/// The ⋯ button: everything that is a setting rather than a key.
+- (UIMenu *)settingsMenu {
+    __weak KeyBarView *weakSelf = self;
+    NSMutableArray<UIMenuElement *> *sections = [NSMutableArray array];
+
+    if (_content != KeyBarContentKeyboard) {
+        [sections addObject:[self addToPadMenu]];
+
+        if ([KeyMacros padIsCustomisedForProfile:_profileKey]) {
+            UIAction *reset =
+                [UIAction actionWithTitle:@"Reset Pad"
+                                    image:[UIImage systemImageNamed:@"arrow.uturn.backward"]
+                               identifier:nil
+                                  handler:^(__kindof UIAction *sender) {
+                [KeyMacros resetPadForProfile:weakSelf.profileKeyForMenu];
+                [weakSelf reloadGroups];
+            }];
+            reset.attributes = UIMenuElementAttributesDestructive;
+            [sections addObject:reset];
+        }
+    }
+
+    [sections addObject:[self hostKindMenu]];
+
+    // Installing an app does not replace the copy already running, and nothing from the outside
+    // says which one a phone is executing. One line here answers it in a second.
     UIAction *build = [UIAction actionWithTitle:@"build " @KEYBAR_BUILD_ID
                                           image:nil
                                      identifier:nil
                                         handler:^(__kindof UIAction *sender) {}];
     build.attributes = UIMenuElementAttributesDisabled;
+    [sections addObject:[UIMenu menuWithTitle:@"" image:nil identifier:nil
+                                      options:UIMenuOptionsDisplayInline children:@[build]]];
 
-    return [UIMenu menuWithTitle:@"Host runs"
-                        children:[actions arrayByAddingObject:
-                                  [UIMenu menuWithTitle:@"" image:nil identifier:nil
-                                                options:UIMenuOptionsDisplayInline
-                                               children:@[build]]]];
+    return [UIMenu menuWithTitle:@"" children:sections];
 }
 
 /// Anything held is released first: the keys about to be replaced are the ones the host has
@@ -1030,6 +1175,10 @@ typedef NS_ENUM(NSInteger, KeyBarLayout) {
     [self releaseHeldModifiers];
     [KeyMacros setHostKind:kind forKey:_hostKey];
     [self reloadGroups];
+}
+
+- (KeyMacroHost)hostKind {
+    return [KeyMacros hostKindForKey:_hostKey];
 }
 
 - (void)keyboardTogglePressed {

@@ -31,7 +31,11 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     BOOL isInputingText;
     NSMutableSet* keysDown;
 #if !TARGET_OS_TV
+    /// The line above the system keyboard: modifiers, escape, tab, return, delete, arrows.
     KeyBarView* keyBar;
+    /// The columns down the letterbox: a short list of macros the user chose. Nil when the
+    /// stream leaves no letterbox to put them in, and then keyBar carries both.
+    KeyBarView* macroPad;
     BOOL systemKeyboardVisible;
     /// Identifies the host, so its operating system is remembered per machine.
     NSString* hostKey;
@@ -384,10 +388,7 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
                 keyInputField.delegate = self;
                 keyInputField.text = @"0";
 #if !TARGET_OS_TV
-                keyBar = [[KeyBarView alloc] initWithFrame:CGRectMake(0, 0, self.bounds.size.width, 44)
-                                                  hostKey:hostKey
-                                                  appName:streamedAppName];
-                keyBar.delegate = self;
+                [self createKeyBars];
 
                 // With a hardware keyboard attached there is nothing to type on screen, and
                 // the system keyboard would cover half the picture for no reason. Start
@@ -418,14 +419,58 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     return NO;
 }
 
+/// Builds whichever surfaces this screen has room for.
+///
+/// Two of them where the stream is letterboxed: a keyboard line that comes and goes with the
+/// system keyboard, and a pad of macros down the margins that stays either way. One of them
+/// where it is not, carrying both, because there is nowhere for a second.
+- (void)createKeyBars {
+    CGRect line = CGRectMake(0, 0, self.bounds.size.width, 44);
+    BOOL hasMargin = [self keyBarMarginWidth] > 0;
+
+    keyBar = [[KeyBarView alloc] initWithFrame:line
+                                       hostKey:hostKey
+                                       appName:streamedAppName
+                                       content:hasMargin ? KeyBarContentKeyboard
+                                                         : KeyBarContentBoth];
+    keyBar.delegate = self;
+    // With a pad on screen the controls belong there: it is the one that is always visible,
+    // and duplicating Done on two surfaces makes it unclear what either one dismisses.
+    keyBar.showsControls = !hasMargin;
+
+    if (hasMargin) {
+        macroPad = [[KeyBarView alloc] initWithFrame:self.bounds
+                                             hostKey:hostKey
+                                             appName:streamedAppName
+                                             content:KeyBarContentPad];
+        macroPad.delegate = self;
+        macroPad.showsControls = YES;
+        [self pinMacroPad];
+    }
+}
+
+/// Puts the pad in the letterbox: both strips, with the middle passing through to the stream.
+- (void)pinMacroPad {
+    UIView *host = [self keyBarHostView];
+    macroPad.translatesAutoresizingMaskIntoConstraints = NO;
+    [host addSubview:macroPad];
+    [macroPad setSplitLayoutWithMarginWidth:[self keyBarMarginWidth]];
+    [NSLayoutConstraint activateConstraints:@[
+        [macroPad.leadingAnchor constraintEqualToAnchor:host.leadingAnchor],
+        [macroPad.trailingAnchor constraintEqualToAnchor:host.trailingAnchor],
+        [macroPad.topAnchor constraintEqualToAnchor:host.topAnchor],
+        [macroPad.bottomAnchor constraintEqualToAnchor:host.bottomAnchor],
+    ]];
+}
+
 /// Shows the key bar, with or without the system keyboard under it.
 ///
 /// The bar is the same object either way, so held modifiers survive the switch: this changes
 /// what is on screen, not what the host believes is pressed.
 - (void)presentKeyBarWithSystemKeyboard:(BOOL)withSystemKeyboard {
-    if (withSystemKeyboard && [self keyBarMarginWidth] <= 0) {
-        // Nowhere free to put it: as an inputAccessoryView, UIKit owns the frame and the bar
-        // must lie along the top of the system keyboard.
+    if (withSystemKeyboard) {
+        // As an inputAccessoryView, UIKit owns the frame and the bar lies along the top of the
+        // system keyboard — which is exactly where a keyboard's missing keys belong.
         [keyBar removeFromSuperview];
         [keyBar setAxis:UILayoutConstraintAxisHorizontal];
         keyBar.translatesAutoresizingMaskIntoConstraints = YES;
@@ -434,19 +479,22 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
         [keyInputField reloadInputViews];
         [keyInputField becomeFirstResponder];
     } else {
-        // The bar lives in the letterbox, which the system keyboard does not reach, so it can
-        // stay exactly where it is while the keyboard comes and goes.
+        // The line completes the system keyboard, so with no keyboard there is nothing for it
+        // to complete: it goes away and the pad, which is not attached to it, stays. Where
+        // there is no pad it has to stay too, pinned along the bottom.
+        [keyBar releaseHeldModifiers];
         keyInputField.inputAccessoryView = nil;
-        [self pinKeyBar];
-        if (withSystemKeyboard) {
-            [keyInputField becomeFirstResponder];
+        [keyInputField resignFirstResponder];
+        if (macroPad == nil) {
+            [self pinKeyBar];
         } else {
-            [keyInputField resignFirstResponder];
+            [keyBar removeFromSuperview];
         }
     }
 
     systemKeyboardVisible = withSystemKeyboard;
     [keyBar setSystemKeyboardVisible:withSystemKeyboard];
+    [macroPad setSystemKeyboardVisible:withSystemKeyboard];
 }
 
 /// How much black there is down each side of the picture, or zero if there is not enough to
@@ -461,42 +509,22 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     return margin >= [KeyBarView barThickness] ? margin : 0;
 }
 
-/// Puts the key bar where it costs the least picture.
-///
-/// The streamed desktop is letterboxed to preserve its aspect, and where the black lands
-/// depends on the two shapes. A 1512x982 Mac on an iPhone in landscape fits 677 points wide
-/// inside 956, leaving 139 points of pure black down each side — a quarter of the screen,
-/// holding nothing, and exactly where the thumbs rest. Both strips become columns of keys. On
-/// iPad the same desktop fills the screen to within a few points, so there is no free edge and
-/// the bar sits along the bottom, blurred, over picture.
+/// Pins the keyboard line along the bottom. Only reached where there is no pad, since with a
+/// pad the line lives above the system keyboard or not at all.
 - (void)pinKeyBar {
     UIView *host = [self keyBarHostView];
     if (keyBar.superview == host) {
         return;
     }
 
-    CGFloat margin = [self keyBarMarginWidth];
     keyBar.translatesAutoresizingMaskIntoConstraints = NO;
     [host addSubview:keyBar];
-
-    if (margin > 0) {
-        // Spans everything, and passes the middle through to the stream: the two columns have
-        // to reach both edges, and there is no one rectangle that is only the two margins.
-        [keyBar setSplitLayoutWithMarginWidth:margin];
-        [NSLayoutConstraint activateConstraints:@[
-            [keyBar.leadingAnchor constraintEqualToAnchor:host.leadingAnchor],
-            [keyBar.trailingAnchor constraintEqualToAnchor:host.trailingAnchor],
-            [keyBar.topAnchor constraintEqualToAnchor:host.topAnchor],
-            [keyBar.bottomAnchor constraintEqualToAnchor:host.bottomAnchor],
-        ]];
-    } else {
-        [keyBar setAxis:UILayoutConstraintAxisHorizontal];
-        [NSLayoutConstraint activateConstraints:@[
-            [keyBar.leadingAnchor constraintEqualToAnchor:host.leadingAnchor],
-            [keyBar.trailingAnchor constraintEqualToAnchor:host.trailingAnchor],
-            [keyBar.bottomAnchor constraintEqualToAnchor:host.bottomAnchor],
-        ]];
-    }
+    [keyBar setAxis:UILayoutConstraintAxisHorizontal];
+    [NSLayoutConstraint activateConstraints:@[
+        [keyBar.leadingAnchor constraintEqualToAnchor:host.leadingAnchor],
+        [keyBar.trailingAnchor constraintEqualToAnchor:host.trailingAnchor],
+        [keyBar.bottomAnchor constraintEqualToAnchor:host.bottomAnchor],
+    ]];
 }
 
 /// The view the key bar hangs off.
@@ -524,13 +552,12 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
 /// subsequent keystroke would silently arrive modified.
 - (void)dismissKeyBar {
     [keyBar releaseHeldModifiers];
-
-    if (keyBar.superview != nil) {
-        [keyBar removeFromSuperview];
-    }
+    [keyBar removeFromSuperview];
+    [macroPad removeFromSuperview];
 
     keyInputField.inputAccessoryView = nil;
     keyBar = nil;
+    macroPad = nil;
 }
 
 - (void)keyBarDidRequestDismiss {

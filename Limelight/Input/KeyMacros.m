@@ -58,13 +58,26 @@
     return item;
 }
 
+- (instancetype)explained:(NSString *)detail {
+    KeyItem *copy = [KeyItem itemWithLabel:_label kind:_kind code:_virtualKey flags:_modifiers];
+    copy->_steps = _steps;
+    copy->_scrollClicks = _scrollClicks;
+    copy->_detail = [detail copy];
+    return copy;
+}
+
 @end
 
 @implementation KeyGroup
 
 + (instancetype)groupWithItems:(NSArray<KeyItem *> *)items {
+    return [self groupNamed:nil items:items];
+}
+
++ (instancetype)groupNamed:(NSString *)name items:(NSArray<KeyItem *> *)items {
     KeyGroup *group = [[KeyGroup alloc] init];
     if (group != nil) {
+        group->_name = [name copy];
         group->_items = [items copy];
     }
     return group;
@@ -74,165 +87,261 @@
 
 @implementation KeyMacros
 
-/// tmux, then the input source, then the text keys. This set is not designed here: it is
-/// TraceRecorder's Quick Input panel, which is the same person driving the same Mac, and it
-/// settled after daily use rather than on paper.
-///
-/// Every item is a macro. The bar carries no bare modifiers, no arrows and no letters, because
-/// the system keyboard is one tap away and already has them — spending the letterbox on a
-/// second keyboard buys nothing. Labels are the chord itself for the same reason the panel
-/// does it: "⌘W" is shorter than "Close", says more, and two of them fit on one row.
+#pragma mark - The keyboard
 
-/// Prefix sequences for tmux. A chord cannot express what a prefix-key program needs:
-/// Control-A, released, then the command key. That is two events in order, not one
-/// combination, and it is the shape Stream Deck calls a multi-action.
-///
-/// Kept to what Harrison actually drives: zoom a pane, the broadcast toggle, and moving the
-/// focus between panes. The prefix is Control-A rather than tmux's default Control-B.
++ (NSArray<KeyGroup *> *)keyboardGroupsForHost:(KeyMacroHost)host {
+    BOOL mac = host == KeyMacroHostMacOS;
+    return @[
+        // Leftmost, so their position never moves. Tapping once arms one for the next key,
+        // twice holds it down — which is what makes ⌃C typeable with the system keyboard.
+        [KeyGroup groupWithItems:@[
+            [KeyItem modifier:@"⇧" code:0xA0 flag:UIKeyModifierShift],
+            [KeyItem modifier:@"⌃" code:0xA2 flag:UIKeyModifierControl],
+            [KeyItem modifier:mac ? @"⌥" : @"alt" code:0xA4 flag:UIKeyModifierAlternate],
+            [KeyItem modifier:mac ? @"⌘" : @"⊞" code:0x5B flag:UIKeyModifierCommand],
+        ]],
+        [KeyGroup groupWithItems:@[
+            [KeyItem key:@"esc" code:0x1B],
+            [KeyItem key:@"tab" code:0x09],
+            [KeyItem key:@"↵" code:0x0D],
+            [KeyItem key:@"⌫" code:0x08],
+            [KeyItem key:@"⌦" code:0x2E],
+        ]],
+        [KeyGroup groupWithItems:@[
+            [KeyItem key:@"←" code:0x25],
+            [KeyItem key:@"↓" code:0x28],
+            [KeyItem key:@"↑" code:0x26],
+            [KeyItem key:@"→" code:0x27],
+        ]],
+    ];
+}
+
+#pragma mark - The pad
+
+/// tmux and every other prefix-key program need a sequence, not a chord: Control-A, released,
+/// then the command key. The prefix is Control-A rather than tmux's default Control-B.
 + (KeyGroup *)tmuxGroup {
     KeyStep *prefix = [KeyStep step:0x41 modifiers:UIKeyModifierControl];  // Control-A
-    KeyItem *(^command)(NSString *, short) = ^KeyItem *(NSString *label, short key) {
-        return [KeyItem sequence:label steps:@[prefix, [KeyStep step:key modifiers:0]]];
+    KeyItem *(^cmd)(NSString *, short, NSString *) =
+        ^KeyItem *(NSString *label, short key, NSString *detail) {
+        return [[KeyItem sequence:label steps:@[prefix, [KeyStep step:key modifiers:0]]]
+                explained:detail];
     };
 
-    return [KeyGroup groupWithItems:@[
-        command(@"⌃AZ", 0x5A),
-        // prefix b toggles synchronize-panes, so typing goes to every pane in the window at
-        // once. Harrison's binding turns the tmux status bar red while it is on.
-        command(@"⌃AB", 0x42),
-        command(@"⌃A←", 0x25),
-        command(@"⌃A↓", 0x28),
-        command(@"⌃A↑", 0x26),
-        command(@"⌃A→", 0x27),
+    return [KeyGroup groupNamed:@"tmux" items:@[
+        cmd(@"⌃AZ", 0x5A, @"Zoom the pane"),
+        // Harrison's binding turns the tmux status bar red while synchronize-panes is on.
+        cmd(@"⌃AB", 0x42, @"Broadcast typing to every pane"),
+        cmd(@"⌃A←", 0x25, @"Focus the pane to the left"),
+        cmd(@"⌃A↓", 0x28, @"Focus the pane below"),
+        cmd(@"⌃A↑", 0x26, @"Focus the pane above"),
+        cmd(@"⌃A→", 0x27, @"Focus the pane to the right"),
+        cmd(@"⌃AC", 0x43, @"New window"),
+        cmd(@"⌃AN", 0x4E, @"Next window"),
+        cmd(@"⌃A[", 0xDB, @"Copy mode, to scroll back"),
     ]];
 }
 
-/// The host's input source toggle, on its own so it is easy to find.
-///
-/// None of the tmux commands reach tmux while the host is composing in a Chinese input source:
-/// the Control chord gets through but the command key that follows is eaten by the
-/// composition. This is here so the fix is one tap away. It is not sent automatically before
-/// every command, because Control-Space toggles rather than selects — firing it blindly would
-/// switch a host that was already in English into Chinese, breaking the thing it protects.
 + (KeyGroup *)inputSourceGroup {
-    return [KeyGroup groupWithItems:@[
-        [KeyItem macro:@"中/A" code:0x20 flags:UIKeyModifierControl],
+    return [KeyGroup groupNamed:@"Input" items:@[
+        // None of the tmux commands reach tmux while the host is composing in a Chinese input
+        // source: the Control chord gets through but the command key that follows is eaten by
+        // the composition. This is here so the fix is one tap away. It is not sent
+        // automatically before every command, because Control-Space toggles rather than
+        // selects — firing it blindly would switch a host that was already in English into
+        // Chinese, breaking the thing it protects.
+        [[KeyItem macro:@"中/A" code:0x20 flags:UIKeyModifierControl]
+         explained:@"Switch the host's input source"],
     ]];
 }
 
-/// Delete, escape and the clipboard, exactly the panel's first row.
-+ (KeyGroup *)textKeysForHost:(KeyMacroHost)host {
++ (KeyGroup *)textGroupForHost:(KeyMacroHost)host {
     BOOL mac = host == KeyMacroHostMacOS;
     UIKeyModifierFlags m = mac ? UIKeyModifierCommand : UIKeyModifierControl;
     NSString *sym = mac ? @"⌘" : @"⌃";
-    KeyItem *(^chord)(NSString *, short) = ^KeyItem *(NSString *letter, short key) {
-        return [KeyItem macro:[sym stringByAppendingString:letter] code:key flags:m];
+    KeyItem *(^chord)(NSString *, short, NSString *) =
+        ^KeyItem *(NSString *letter, short key, NSString *detail) {
+        return [[KeyItem macro:[sym stringByAppendingString:letter] code:key flags:m]
+                explained:detail];
     };
 
-    return [KeyGroup groupWithItems:@[
-        [KeyItem key:@"⌫" code:0x08],
-        [KeyItem key:@"⌦" code:0x2E],
-        [KeyItem key:@"Esc" code:0x1B],
-        chord(@"A", 0x41),
-        chord(@"C", 0x43),
-        chord(@"X", 0x58),
-        chord(@"V", 0x56),
-        chord(@"Z", 0x5A),
+    return [KeyGroup groupNamed:@"Text" items:@[
+        chord(@"A", 0x41, @"Select all"),
+        chord(@"C", 0x43, @"Copy"),
+        chord(@"X", 0x58, @"Cut"),
+        chord(@"V", 0x56, @"Paste"),
+        chord(@"Z", 0x5A, @"Undo"),
     ]];
 }
 
-/// The wheel.
-///
 /// Positive clicks scroll towards the top of the document — the same direction Moonlight's own
-/// two-finger pan sends when it is dragged downwards. Three clicks is roughly a few lines,
-/// which is what the panel settled on.
+/// two-finger pan sends when it is dragged downwards. Three clicks is roughly a few lines.
 + (KeyGroup *)scrollGroup {
-    return [KeyGroup groupWithItems:@[
-        [KeyItem scroll:@"∧" clicks:3],
-        [KeyItem scroll:@"∨" clicks:-3],
+    return [KeyGroup groupNamed:@"Scroll" items:@[
+        [[KeyItem scroll:@"∧" clicks:3] explained:@"Scroll up"],
+        [[KeyItem scroll:@"∨" clicks:-3] explained:@"Scroll down"],
     ]];
 }
 
-/// Window and desktop navigation. Multi-finger gestures cannot be produced at all from here,
+/// Window and desktop navigation. Multi-finger gestures cannot be produced from here at all,
 /// so these are their keyboard equivalents — which is what the gestures trigger anyway.
 + (KeyGroup *)systemGroupForHost:(KeyMacroHost)host {
+    UIKeyModifierFlags shift = UIKeyModifierShift;
+
     if (host == KeyMacroHostMacOS) {
         UIKeyModifierFlags cmd = UIKeyModifierCommand;
         UIKeyModifierFlags ctrl = UIKeyModifierControl;
-        return [KeyGroup groupWithItems:@[
-            [KeyItem macro:@"⌘Tab" code:0x09 flags:cmd],
-            [KeyItem macro:@"⇧⌘Tab" code:0x09 flags:cmd | UIKeyModifierShift],
-            [KeyItem macro:@"⌘`" code:0xC0 flags:cmd],
-            [KeyItem macro:@"⌘W" code:0x57 flags:cmd],
-            [KeyItem macro:@"⌘Q" code:0x51 flags:cmd],
-            [KeyItem macro:@"⌘H" code:0x48 flags:cmd],
-            [KeyItem macro:@"⌘M" code:0x4D flags:cmd],
-            [KeyItem macro:@"⌃⌘F" code:0x46 flags:cmd | ctrl],
-            [KeyItem macro:@"⌃←" code:0x25 flags:ctrl],
-            [KeyItem macro:@"⌃→" code:0x27 flags:ctrl],
-            [KeyItem macro:@"⌃↑" code:0x26 flags:ctrl],
-            [KeyItem macro:@"⌃↓" code:0x28 flags:ctrl],
-            [KeyItem macro:@"⌘Spc" code:0x20 flags:cmd],
-            [KeyItem macro:@"⇧⌘4" code:0x34 flags:cmd | UIKeyModifierShift],
+        return [KeyGroup groupNamed:@"Windows" items:@[
+            [[KeyItem macro:@"⌘Tab" code:0x09 flags:cmd] explained:@"Previous app"],
+            [[KeyItem macro:@"⇧⌘Tab" code:0x09 flags:cmd | shift] explained:@"App switcher, back"],
+            [[KeyItem macro:@"⌘`" code:0xC0 flags:cmd] explained:@"Cycle this app's windows"],
+            [[KeyItem macro:@"⌘W" code:0x57 flags:cmd] explained:@"Close the window"],
+            [[KeyItem macro:@"⌘Q" code:0x51 flags:cmd] explained:@"Quit the app"],
+            [[KeyItem macro:@"⌘H" code:0x48 flags:cmd] explained:@"Hide the app"],
+            [[KeyItem macro:@"⌘M" code:0x4D flags:cmd] explained:@"Minimise the window"],
+            [[KeyItem macro:@"⌃⌘F" code:0x46 flags:cmd | ctrl] explained:@"Toggle full screen"],
+            [[KeyItem macro:@"⌃←" code:0x25 flags:ctrl] explained:@"Previous desktop"],
+            [[KeyItem macro:@"⌃→" code:0x27 flags:ctrl] explained:@"Next desktop"],
+            [[KeyItem macro:@"⌃↑" code:0x26 flags:ctrl] explained:@"Mission Control"],
+            [[KeyItem macro:@"⌃↓" code:0x28 flags:ctrl] explained:@"App Exposé"],
+            [[KeyItem macro:@"⌘Spc" code:0x20 flags:cmd] explained:@"Spotlight"],
+            [[KeyItem macro:@"⇧⌘4" code:0x34 flags:cmd | shift] explained:@"Screenshot a selection"],
         ]];
     }
 
     // Standard Windows shortcuts rather than ones proven in use, which is a weaker basis than
     // the macOS set and worth saying so. UIKeyModifierCommand is the Windows key here.
     UIKeyModifierFlags win = UIKeyModifierCommand;
-    return [KeyGroup groupWithItems:@[
-        [KeyItem macro:@"⎇Tab" code:0x09 flags:UIKeyModifierAlternate],
-        [KeyItem macro:@"⎇F4" code:0x73 flags:UIKeyModifierAlternate],
-        [KeyItem macro:@"⊞Tab" code:0x09 flags:win],
-        [KeyItem macro:@"⊞D" code:0x44 flags:win],
-        [KeyItem macro:@"⊞E" code:0x45 flags:win],
-        [KeyItem macro:@"⊞L" code:0x4C flags:win],
-        [KeyItem macro:@"⊞" code:0x5B flags:0],
-        [KeyItem macro:@"⌃⇧Esc" code:0x1B flags:UIKeyModifierControl | UIKeyModifierShift],
-        [KeyItem macro:@"⊞⇧S" code:0x53 flags:win | UIKeyModifierShift],
+    UIKeyModifierFlags alt = UIKeyModifierAlternate;
+    return [KeyGroup groupNamed:@"Windows" items:@[
+        [[KeyItem macro:@"⎇Tab" code:0x09 flags:alt] explained:@"Switch app"],
+        [[KeyItem macro:@"⎇F4" code:0x73 flags:alt] explained:@"Close the window"],
+        [[KeyItem macro:@"⊞Tab" code:0x09 flags:win] explained:@"Task view"],
+        [[KeyItem macro:@"⊞D" code:0x44 flags:win] explained:@"Show the desktop"],
+        [[KeyItem macro:@"⊞E" code:0x45 flags:win] explained:@"File Explorer"],
+        [[KeyItem macro:@"⊞L" code:0x4C flags:win] explained:@"Lock"],
+        [[KeyItem macro:@"⊞" code:0x5B flags:0] explained:@"Start menu"],
+        [[KeyItem macro:@"⌃⇧Esc" code:0x1B flags:UIKeyModifierControl | shift]
+         explained:@"Task Manager"],
+        [[KeyItem macro:@"⊞⇧S" code:0x53 flags:win | shift] explained:@"Snip"],
     ]];
 }
 
-+ (NSArray<KeyGroup *> *)groupsForHost:(KeyMacroHost)host {
-    return host == KeyMacroHostMacOS ? [self macOSGroups] : [self windowsGroups];
-}
-
-+ (NSArray<KeyGroup *> *)macOSGroups {
-    static NSArray<KeyGroup *> *groups;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        // The left thumb gets tmux and the input source — what this is driven with every day,
-        // all of it above the system keyboard without scrolling. The right thumb gets the
-        // wheel and system navigation.
-        KeyGroup *scroll = [self scrollGroup];
-        scroll.startsSecondColumn = YES;
-
-        groups = @[
++ (NSArray<KeyGroup *> *)macroCatalogueForHost:(KeyMacroHost)host {
+    if (host == KeyMacroHostMacOS) {
+        return @[
             [self tmuxGroup],
             [self inputSourceGroup],
-            [self textKeysForHost:KeyMacroHostMacOS],
-            scroll,
-            [self systemGroupForHost:KeyMacroHostMacOS],
+            [self systemGroupForHost:host],
+            [self textGroupForHost:host],
+            [self scrollGroup],
         ];
-    });
-    return groups;
+    }
+    return @[
+        [self systemGroupForHost:host],
+        [self textGroupForHost:host],
+        [self scrollGroup],
+    ];
 }
 
-+ (NSArray<KeyGroup *> *)windowsGroups {
-    static NSArray<KeyGroup *> *groups;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        KeyGroup *scroll = [self scrollGroup];
-        scroll.startsSecondColumn = YES;
-
-        groups = @[
-            [self textKeysForHost:KeyMacroHostWindows],
-            scroll,
-            [self systemGroupForHost:KeyMacroHostWindows],
-        ];
-    });
-    return groups;
+/// What the pad holds before anyone changes it.
+///
+/// Deliberately short. The pad is a handful of things worth reaching without thinking, not a
+/// second keyboard: window switching, the tmux commands this is driven with, and the input
+/// source toggle that unblocks them. Everything else is two taps away in the add menu.
++ (NSArray<NSString *> *)defaultPadLabelsForHost:(KeyMacroHost)host {
+    if (host == KeyMacroHostMacOS) {
+        return @[@"⌘Tab", @"⌘`", @"⌃AZ", @"⌃AB", @"⌃A←", @"⌃A→", @"中/A", @"∧", @"∨"];
+    }
+    return @[@"⎇Tab", @"⊞Tab", @"⊞D", @"⌃C", @"⌃V", @"∧", @"∨"];
 }
+
+/// Items are stored by label. Labels are unique within a host's catalogue and survive a
+/// rebuild, which a pointer or an index would not.
+static NSString *KeyPadDefaultsKey(NSString *profileKey) {
+    return [NSString stringWithFormat:@"KeyBar.%@.pad",
+            profileKey.length > 0 ? profileKey : @"default"];
+}
+
++ (NSArray<NSString *> *)storedPadLabelsForProfile:(NSString *)profileKey {
+    return [[NSUserDefaults standardUserDefaults] stringArrayForKey:KeyPadDefaultsKey(profileKey)];
+}
+
++ (void)storePadLabels:(NSArray<NSString *> *)labels forProfile:(NSString *)profileKey {
+    [[NSUserDefaults standardUserDefaults] setObject:labels forKey:KeyPadDefaultsKey(profileKey)];
+}
+
+/// Every catalogue item by label, so a stored label resolves back to the real behaviour.
++ (NSDictionary<NSString *, KeyItem *> *)catalogueByLabelForHost:(KeyMacroHost)host {
+    NSMutableDictionary<NSString *, KeyItem *> *byLabel = [NSMutableDictionary dictionary];
+    for (KeyGroup *group in [self macroCatalogueForHost:host]) {
+        for (KeyItem *item in group.items) {
+            byLabel[item.label] = item;
+        }
+    }
+    return byLabel;
+}
+
++ (NSArray<KeyItem *> *)padItemsForHost:(KeyMacroHost)host profileKey:(NSString *)profileKey {
+    NSArray<NSString *> *labels = [self storedPadLabelsForProfile:profileKey]
+                                  ?: [self defaultPadLabelsForHost:host];
+    NSDictionary<NSString *, KeyItem *> *byLabel = [self catalogueByLabelForHost:host];
+
+    NSMutableArray<KeyItem *> *items = [NSMutableArray array];
+    for (NSString *label in labels) {
+        // Silently skips anything this host's catalogue does not have, which is what should
+        // happen when the host kind is changed under a stored list.
+        KeyItem *item = byLabel[label];
+        if (item != nil) {
+            [items addObject:item];
+        }
+    }
+    return items;
+}
+
+/// The stored list, materialised from the default first if the user has never changed it — so
+/// adding one key does not silently discard the other eight.
++ (NSMutableArray<NSString *> *)mutablePadLabelsForHost:(KeyMacroHost)host
+                                                profile:(NSString *)profileKey {
+    NSArray<NSString *> *labels = [self storedPadLabelsForProfile:profileKey]
+                                  ?: [self defaultPadLabelsForHost:host];
+    return [labels mutableCopy];
+}
+
++ (void)addToPad:(KeyItem *)item forProfile:(NSString *)profileKey host:(KeyMacroHost)host {
+    NSMutableArray<NSString *> *labels = [self mutablePadLabelsForHost:host profile:profileKey];
+    if ([labels containsObject:item.label]) {
+        return;
+    }
+    [labels addObject:item.label];
+    [self storePadLabels:labels forProfile:profileKey];
+}
+
++ (void)removeFromPad:(KeyItem *)item forProfile:(NSString *)profileKey host:(KeyMacroHost)host {
+    NSMutableArray<NSString *> *labels = [self mutablePadLabelsForHost:host profile:profileKey];
+    [labels removeObject:item.label];
+    [self storePadLabels:labels forProfile:profileKey];
+}
+
++ (void)promoteOnPad:(KeyItem *)item forProfile:(NSString *)profileKey host:(KeyMacroHost)host {
+    NSMutableArray<NSString *> *labels = [self mutablePadLabelsForHost:host profile:profileKey];
+    NSUInteger index = [labels indexOfObject:item.label];
+    if (index == NSNotFound || index == 0) {
+        return;
+    }
+    [labels exchangeObjectAtIndex:index withObjectAtIndex:index - 1];
+    [self storePadLabels:labels forProfile:profileKey];
+}
+
++ (void)resetPadForProfile:(NSString *)profileKey {
+    [[NSUserDefaults standardUserDefaults] removeObjectForKey:KeyPadDefaultsKey(profileKey)];
+}
+
++ (BOOL)padIsCustomisedForProfile:(NSString *)profileKey {
+    return [self storedPadLabelsForProfile:profileKey] != nil;
+}
+
+#pragma mark - Which host
 
 + (KeyMacroHost)defaultHost {
     return KeyMacroHostMacOS;
@@ -256,109 +365,6 @@ static NSString *KeyMacroHostDefaultsKey(NSString *key) {
 
 + (NSString *)nameForHostKind:(KeyMacroHost)kind {
     return kind == KeyMacroHostMacOS ? @"macOS" : @"Windows";
-}
-
-#pragma mark - Customisation
-
-/// Items are identified by label. Labels are unique within a layout and survive a rebuild,
-/// which a pointer or an index would not.
-static NSString *KeyProfileDefaultsKey(NSString *profileKey, NSString *field) {
-    return [NSString stringWithFormat:@"KeyBar.%@.%@", profileKey.length > 0 ? profileKey : @"default", field];
-}
-
-+ (NSArray<NSString *> *)storedListFor:(NSString *)profileKey field:(NSString *)field {
-    NSArray *stored = [[NSUserDefaults standardUserDefaults]
-        stringArrayForKey:KeyProfileDefaultsKey(profileKey, field)];
-    return stored ?: @[];
-}
-
-+ (void)storeList:(NSArray<NSString *> *)list for:(NSString *)profileKey field:(NSString *)field {
-    [[NSUserDefaults standardUserDefaults] setObject:list forKey:KeyProfileDefaultsKey(profileKey, field)];
-}
-
-+ (void)pinItem:(KeyItem *)item forProfile:(NSString *)profileKey {
-    NSArray<NSString *> *pinned = [self storedListFor:profileKey field:@"pinned"];
-    if ([pinned containsObject:item.label]) {
-        return;
-    }
-    [self storeList:[pinned arrayByAddingObject:item.label] for:profileKey field:@"pinned"];
-}
-
-+ (void)hideItem:(KeyItem *)item forProfile:(NSString *)profileKey {
-    NSArray<NSString *> *hidden = [self storedListFor:profileKey field:@"hidden"];
-    if ([hidden containsObject:item.label]) {
-        return;
-    }
-    [self storeList:[hidden arrayByAddingObject:item.label] for:profileKey field:@"hidden"];
-}
-
-+ (BOOL)isPinned:(KeyItem *)item forProfile:(NSString *)profileKey {
-    return [[self storedListFor:profileKey field:@"pinned"] containsObject:item.label];
-}
-
-+ (void)resetProfile:(NSString *)profileKey {
-    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-    [defaults removeObjectForKey:KeyProfileDefaultsKey(profileKey, @"pinned")];
-    [defaults removeObjectForKey:KeyProfileDefaultsKey(profileKey, @"hidden")];
-}
-
-+ (BOOL)hasCustomisationForProfile:(NSString *)profileKey {
-    return [self storedListFor:profileKey field:@"pinned"].count > 0
-        || [self storedListFor:profileKey field:@"hidden"].count > 0;
-}
-
-+ (NSArray<KeyGroup *> *)groupsForHost:(KeyMacroHost)host profileKey:(NSString *)profileKey {
-    NSArray<KeyGroup *> *base = [self groupsForHost:host];
-    NSArray<NSString *> *pinned = [self storedListFor:profileKey field:@"pinned"];
-    NSArray<NSString *> *hidden = [self storedListFor:profileKey field:@"hidden"];
-
-    if (pinned.count == 0 && hidden.count == 0) {
-        return base;
-    }
-
-    // Look up the pinned labels in the base layout so a pinned item keeps its real behaviour.
-    NSMutableDictionary<NSString *, KeyItem *> *byLabel = [NSMutableDictionary dictionary];
-    for (KeyGroup *group in base) {
-        for (KeyItem *item in group.items) {
-            byLabel[item.label] = item;
-        }
-    }
-
-    NSMutableArray<KeyGroup *> *groups = [NSMutableArray array];
-
-    // Pinned items lead the left column. That is the whole of what pinning means: there is one
-    // list, so "your own page" is "first under the thumb".
-    if (pinned.count > 0) {
-        NSMutableArray<KeyItem *> *items = [NSMutableArray array];
-        for (NSString *label in pinned) {
-            KeyItem *item = byLabel[label];
-            if (item != nil) {
-                [items addObject:item];
-            }
-        }
-        if (items.count > 0) {
-            [groups addObject:[KeyGroup groupWithItems:items]];
-        }
-    }
-
-    for (KeyGroup *group in base) {
-        NSMutableArray<KeyItem *> *items = [NSMutableArray array];
-        for (KeyItem *item in group.items) {
-            // A pinned item keeps its original place too, so muscle memory built before
-            // pinning still works.
-            if (![hidden containsObject:item.label]) {
-                [items addObject:item];
-            }
-        }
-        if (items.count > 0) {
-            KeyGroup *rebuilt = [KeyGroup groupWithItems:items];
-            // Carried over, or hiding one key would move the column break.
-            rebuilt.startsSecondColumn = group.startsSecondColumn;
-            [groups addObject:rebuilt];
-        }
-    }
-
-    return groups;
 }
 
 @end

@@ -2,14 +2,29 @@
 //  KeyBarView.h
 //  Moonlight
 //
-//  A horizontally scrolling row of keys that the iOS keyboard does not offer:
-//  Esc, Tab, the modifiers, and the arrows. Replaces the fixed UIToolbar, which
-//  could not scroll and so could not grow.
+//  One class, two surfaces.
+//
+//  As a **keyboard** it is a line above the system keyboard carrying the keys that keyboard
+//  does not have: the modifiers, escape, tab, return, delete, the arrows. It comes and goes
+//  with the system keyboard, because that is what it completes.
+//
+//  As a **pad** it is two columns down the letterbox, carrying a short list of macros the user
+//  chose. It stays whether the system keyboard is up or not, and it is editable in place.
 //
 
 #import <UIKit/UIKit.h>
 
 NS_ASSUME_NONNULL_BEGIN
+
+/// What a bar holds.
+typedef NS_ENUM(NSInteger, KeyBarContent) {
+    /// The keys a keyboard has and the on-screen one does not.
+    KeyBarContentKeyboard,
+    /// The user's chosen macros.
+    KeyBarContentPad,
+    /// Both, in one line. For a screen with no letterbox to put a pad in.
+    KeyBarContentBoth,
+};
 
 @protocol KeyBarViewDelegate <NSObject>
 
@@ -18,8 +33,8 @@ NS_ASSUME_NONNULL_BEGIN
 
 /// The keyboard key was pressed: show the system keyboard if it is hidden, hide it if not.
 ///
-/// The bar stays either way. Held modifiers must survive the switch — this changes what is
-/// on screen, not what the host thinks is pressed.
+/// Held modifiers must survive the switch — this changes what is on screen, not what the host
+/// thinks is pressed.
 - (void)keyBarDidToggleSystemKeyboard;
 
 @end
@@ -28,12 +43,17 @@ NS_ASSUME_NONNULL_BEGIN
 
 @property (nonatomic, weak) id<KeyBarViewDelegate> delegate;
 
+/// Whether this bar carries the ⋯, ⌨ and Done controls. Exactly one surface should: with a pad
+/// on screen the controls belong there, because the pad is the one that is always visible.
+@property (nonatomic, assign) BOOL showsControls;
+
 /// @param hostKey Identifies the host, so which operating system it runs is remembered per machine.
-/// @param appName The app launched on the host, if any. Gives each app its own customisations,
-///                the way Stream Deck switches profiles by which application is in front.
+/// @param appName The app launched on the host, if any. Gives each app its own pad, the way
+///                Stream Deck switches profiles by which application is in front.
 - (instancetype)initWithFrame:(CGRect)frame
                       hostKey:(nullable NSString *)hostKey
-                      appName:(nullable NSString *)appName;
+                      appName:(nullable NSString *)appName
+                      content:(KeyBarContent)content;
 
 /// Lays the bar out as one line along an axis.
 - (void)setAxis:(UILayoutConstraintAxis)axis;
@@ -42,12 +62,10 @@ NS_ASSUME_NONNULL_BEGIN
 ///
 /// A 1512x982 Mac desktop on an iPhone in landscape fits 677 points wide inside 956, leaving
 /// 139 points of pure black down each side — a quarter of the screen holding nothing, and
-/// exactly where the thumbs rest. Two columns there beat one line along an edge on every
-/// count: twice the keys visible, no scrolling for the common ones, and the picture keeps
-/// every pixel it had. The middle passes touches through to the stream.
+/// exactly where the thumbs rest. The middle passes touches through to the stream.
 ///
 /// The columns stop above the system keyboard rather than disappearing under it, so the keys
-/// stay in reach while typing — which one line as an inputAccessoryView could never do.
+/// stay in reach while typing.
 ///
 /// @param marginWidth How wide the letterbox strip is. The caller measures it; the bar itself
 ///                    does not know what shape the stream is.
@@ -58,8 +76,8 @@ NS_ASSUME_NONNULL_BEGIN
 
 /// Releases every modifier the bar is holding down, on the host and visually.
 ///
-/// Must be called when the stream ends or the bar goes away, otherwise the host is left
-/// with a modifier stuck down and every later keystroke arrives modified.
+/// Must be called when the stream ends or the bar goes away, otherwise the host is left with a
+/// modifier stuck down and every later keystroke arrives modified.
 - (void)releaseHeldModifiers;
 
 /// Tells the bar that a key came from the system keyboard, so a one-shot modifier armed here
