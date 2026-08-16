@@ -28,6 +28,18 @@ typedef NS_ENUM(NSInteger, KeyBarModifierState) {
 /// Time in microseconds a normal key is held before being released.
 static const useconds_t keyPressHoldTime = 50 * 1000;
 
+/// Apple's minimum comfortable hit target, and roughly the height of a system keyboard key.
+/// Anything smaller is measurably harder to hit with a thumb.
+static const CGFloat keyMinimumSide = 44;
+
+/// Gap between keys, and around the row.
+static const CGFloat keySpacing = 8;
+static const CGFloat rowVerticalInset = 8;
+static const CGFloat rowHorizontalInset = 12;
+
+/// Total bar height: one key plus the margins above and below it.
+static const CGFloat keyBarHeight = keyMinimumSide + rowVerticalInset * 2;
+
 @interface KeyBarButton : UIButton
 @property (nonatomic, assign) KeyBarKeyKind kind;
 @property (nonatomic, assign) short virtualKey;
@@ -63,9 +75,10 @@ static const useconds_t keyPressHoldTime = 50 * 1000;
     _row = [[UIStackView alloc] initWithFrame:CGRectZero];
     _row.translatesAutoresizingMaskIntoConstraints = NO;
     _row.axis = UILayoutConstraintAxisHorizontal;
-    _row.spacing = 6;
+    _row.spacing = keySpacing;
     _row.layoutMarginsRelativeArrangement = YES;
-    _row.layoutMargins = UIEdgeInsetsMake(6, 10, 6, 10);
+    _row.layoutMargins = UIEdgeInsetsMake(rowVerticalInset, rowHorizontalInset,
+                                          rowVerticalInset, rowHorizontalInset);
     [scrollView addSubview:_row];
 
     [NSLayoutConstraint activateConstraints:@[
@@ -83,7 +96,17 @@ static const useconds_t keyPressHoldTime = 50 * 1000;
 
     [self populateKeys];
 
+    // The caller may have sized us before the keys existed; take the height we actually need.
+    CGRect bounds = self.frame;
+    bounds.size.height = keyBarHeight;
+    self.frame = bounds;
+
     return self;
+}
+
+/// Used by UIKit when this view is an inputAccessoryView, and by Auto Layout when pinned.
+- (CGSize)intrinsicContentSize {
+    return CGSizeMake(UIViewNoIntrinsicMetric, keyBarHeight);
 }
 
 /// Win32 virtual key codes, matching what the rest of the client sends.
@@ -118,10 +141,14 @@ static const useconds_t keyPressHoldTime = 50 * 1000;
     button.modifierState = KeyBarModifierStateOff;
 
     [button setTitle:title forState:UIControlStateNormal];
-    button.titleLabel.font = [UIFont systemFontOfSize:16 weight:UIFontWeightMedium];
-    button.layer.cornerRadius = 6;
-    button.contentEdgeInsets = UIEdgeInsetsMake(4, 10, 4, 10);
-    [button.widthAnchor constraintGreaterThanOrEqualToConstant:40].active = YES;
+    button.titleLabel.font = [UIFont systemFontOfSize:19 weight:UIFontWeightMedium];
+    button.layer.cornerRadius = 8;
+    button.contentEdgeInsets = UIEdgeInsetsMake(0, 12, 0, 12);
+
+    // 44pt on both sides is Apple's minimum hit target. The previous bar was 28pt tall and
+    // 40pt wide, which is why it was awkward to hit.
+    [button.heightAnchor constraintEqualToConstant:keyMinimumSide].active = YES;
+    [button.widthAnchor constraintGreaterThanOrEqualToConstant:keyMinimumSide].active = YES;
 
     [button addTarget:self action:@selector(keyPressed:) forControlEvents:UIControlEventTouchUpInside];
 
