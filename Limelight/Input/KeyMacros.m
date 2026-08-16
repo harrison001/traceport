@@ -113,7 +113,28 @@
             [KeyItem key:@"↑" code:0x26],
             [KeyItem key:@"→" code:0x27],
         ]],
+        // Home, End and the two paging keys. Past the fold, which is what the bar scrolls for.
+        [KeyGroup groupWithItems:@[
+            [KeyItem key:@"↖" code:0x24],
+            [KeyItem key:@"↘" code:0x23],
+            [KeyItem key:@"⇞" code:0x21],
+            [KeyItem key:@"⇟" code:0x22],
+        ]],
+        [KeyGroup groupWithItems:@[
+            [KeyItem key:@"ins" code:0x2D],
+            [KeyItem key:@"Pause" code:0x13],
+            [KeyItem key:@"Break" code:0x03],
+        ]],
+        [KeyGroup groupWithItems:[self functionKeys]],
     ];
+}
+
++ (NSArray<KeyItem *> *)functionKeys {
+    NSMutableArray<KeyItem *> *items = [NSMutableArray array];
+    for (short i = 0; i < 12; i++) {
+        [items addObject:[KeyItem key:[NSString stringWithFormat:@"F%d", i + 1] code:0x70 + i]];
+    }
+    return items;
 }
 
 #pragma mark - The pad

@@ -434,9 +434,6 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
                                        content:hasMargin ? KeyBarContentKeyboard
                                                          : KeyBarContentBoth];
     keyBar.delegate = self;
-    // With a pad on screen the controls belong there: it is the one that is always visible,
-    // and duplicating Done on two surfaces makes it unclear what either one dismisses.
-    keyBar.showsControls = !hasMargin;
 
     if (hasMargin) {
         macroPad = [[KeyBarView alloc] initWithFrame:self.bounds
