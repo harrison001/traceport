@@ -79,6 +79,28 @@ yours.
 The scheme is still called Moonlight — the Xcode target keeps its upstream name so that merges
 from upstream stay readable. Only the product it builds is renamed.
 
+## Set the resolution to your desktop, not to 4K
+
+The one setting worth getting right. In Settings → Resolution, use Custom and enter the
+resolution your desktop actually runs at — 1512×982 for a 14-inch MacBook Pro, say — rather than
+reaching for 4K.
+
+Three things follow from it.
+
+**The text is sharper.** At the desktop's own resolution nothing is scaled. Ask for 4K from a
+smaller desktop and the picture is enlarged and then shrunk again to fit your phone, and the
+letters carry the loss both ways.
+
+**The margins come out where they belong.** A stream whose shape does not match the desktop gets
+the desktop's own black bars encoded into the frame. To the client those bars are picture, not
+margin, so the columns are laid out for a strip much narrower than the black you can see. Matching
+the shape removes the bars, and then the space the client measures is the space you have.
+
+**It costs less bandwidth** for a picture that is better rather than worse.
+
+4K is the right answer when the desktop really is 4K. Otherwise it is asking for a bigger copy of
+something smaller.
+
 ## Host support
 
 Any Sunshine or GeForce Experience host works for everything except caret following.
