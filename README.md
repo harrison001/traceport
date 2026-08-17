@@ -42,6 +42,16 @@ guessing.
 **Text as text.** Anything your phone's own keyboard composes — Chinese characters, emoji,
 dictation — is sent as text rather than as keystrokes it cannot spell.
 
+## Free
+
+Free, and it will stay free wherever it is distributed from. If a build of it ever appears
+somewhere that charges — including an app store — it is not one of mine.
+
+That is a promise about this fork, not a summary of the licence. The GPL has never required
+anyone to give software away, and it does not require me to. Nothing here is worth putting a
+price on: it is a keyboard bolted onto work other people did, and it is theirs far more than it
+is mine.
+
 ## Install
 
 There are no binaries. Build it yourself:
@@ -108,9 +118,16 @@ gamepads, which this fork does not touch.
 ## Licence and credit
 
 GPL v3, inherited from [Moonlight] and unchanged. The streaming client this is built on is the
-work of the Moonlight developers; this fork adds an input layer on top of it and claims nothing
-else. Bugs you find here are almost certainly mine — report them here rather than upstream, and
-please check them against stock Moonlight first.
+work of the Moonlight developers and of everyone who contributed to [moonlight-common-c]; this
+fork adds an input layer on top of it and claims nothing else. Bugs you find here are almost
+certainly mine — report them here rather than upstream, and please check them against stock
+Moonlight first.
+
+The complete corresponding source is this repository, at the commit any build was made from.
+That is the whole of the obligation and there is nothing withheld: no separate edition, no part
+kept back, nothing that has to be paid for to be seen.
+
+[moonlight-common-c]: https://github.com/moonlight-stream/moonlight-common-c
 
 "Moonlight" is their project name. This one is called something else so the two are not confused;
 it is not endorsed by or affiliated with them.
