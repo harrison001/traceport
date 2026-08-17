@@ -1032,8 +1032,8 @@
 				);
 				MARKETING_VERSION = 9.0.2;
 				MTL_ENABLE_DEBUG_INFO = YES;
-				PRODUCT_BUNDLE_IDENTIFIER = "com.moonlight-stream.Moonlight";
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_BUNDLE_IDENTIFIER = io.traceone.port.tv;
+				PRODUCT_NAME = "TracePort TV";
 				SDKROOT = appletvos;
 				SWIFT_OBJC_BRIDGING_HEADER = "Limelight/Input/Moonlight-Bridging-Header.h";
 				SWIFT_OBJC_INTERFACE_HEADER_NAME = "Moonlight-Swift.h";
@@ -1088,8 +1088,8 @@
 				);
 				MARKETING_VERSION = 9.0.2;
 				MTL_ENABLE_DEBUG_INFO = NO;
-				PRODUCT_BUNDLE_IDENTIFIER = "com.moonlight-stream.Moonlight";
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_BUNDLE_IDENTIFIER = io.traceone.port.tv;
+				PRODUCT_NAME = "TracePort TV";
 				SDKROOT = appletvos;
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_OBJC_BRIDGING_HEADER = "Limelight/Input/Moonlight-Bridging-Header.h";
@@ -1247,8 +1247,8 @@
 					"$(PROJECT_DIR)/libs/FFmpeg/lib/iOS-Sim",
 				);
 				MARKETING_VERSION = 9.0.2;
-				PRODUCT_BUNDLE_IDENTIFIER = "com.moonlight-stream.Moonlight";
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_BUNDLE_IDENTIFIER = io.traceone.port;
+				PRODUCT_NAME = "TracePort";
 				PROVISIONING_PROFILE = "";
 				SKIP_INSTALL = NO;
 				SWIFT_OBJC_BRIDGING_HEADER = "Limelight/Input/Moonlight-Bridging-Header.h";
@@ -1297,8 +1297,8 @@
 					"$(PROJECT_DIR)/libs/FFmpeg/lib/iOS-Sim",
 				);
 				MARKETING_VERSION = 9.0.2;
-				PRODUCT_BUNDLE_IDENTIFIER = "com.moonlight-stream.Moonlight";
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_BUNDLE_IDENTIFIER = io.traceone.port;
+				PRODUCT_NAME = "TracePort";
 				PROVISIONING_PROFILE = "";
 				SKIP_INSTALL = NO;
 				SWIFT_COMPILATION_MODE = wholemodule;
