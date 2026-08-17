@@ -85,12 +85,28 @@ typedef NS_ENUM(NSInteger, KeyItemKind) {
 /// For app jumps: the program to open. Nil for everything else.
 @property (nonatomic, copy, readonly, nullable) NSString *appName;
 
+/// Whether the user assembled this chord rather than picking it from the catalogue. Such an item
+/// behaves like any other macro; the difference is that nothing can look up what it means, so its
+/// definition has to be stored alongside the pad.
+@property (nonatomic, assign, readonly) BOOL isCustom;
+
 + (instancetype)key:(NSString *)label code:(short)virtualKey;
 + (instancetype)modifier:(NSString *)label code:(short)virtualKey flag:(UIKeyModifierFlags)flag;
 + (instancetype)macro:(NSString *)label code:(short)virtualKey flags:(UIKeyModifierFlags)flags;
 + (instancetype)sequence:(NSString *)label steps:(NSArray<KeyStep *> *)steps;
 + (instancetype)scroll:(NSString *)label clicks:(signed char)clicks;
 + (instancetype)appJump:(NSString *)appName;
+
+/// The modifier symbols for a set of flags, in the order macOS writes them: ⌃⌥⇧⌘.
+extern NSString *KeyModifierSymbols(UIKeyModifierFlags flags);
+
+/// A chord the user assembled rather than one the catalogue offers.
+///
+/// The label comes from the modifiers and the key, written in the order macOS writes them, so
+/// asking twice for the same chord gives the same label. That is what lets a custom key be
+/// stored, ticked and removed by the machinery that already handles built-in ones — the label is
+/// the identity everywhere else, and this keeps it so.
++ (instancetype)custom:(UIKeyModifierFlags)flags code:(short)virtualKey named:(NSString *)keyName;
 
 /// Returns a copy that brings the keyboard back with it.
 - (instancetype)needingKeyboard;
@@ -152,6 +168,18 @@ typedef NS_ENUM(NSInteger, KeyItemKind) {
 + (void)addAppJump:(NSString *)appName
         forProfile:(nullable NSString *)profileKey
               host:(KeyMacroHost)host;
+
+/// Puts a chord the user assembled on the pad, and remembers what it does.
+///
+/// The pad itself is a list of labels, which is enough for anything in the catalogue because the
+/// catalogue can be asked what a label means. A chord that was invented cannot be looked up, so
+/// its modifiers and key are kept beside the list under the same label.
++ (void)addCustomChord:(KeyItem *)item
+            forProfile:(nullable NSString *)profileKey
+                  host:(KeyMacroHost)host;
+
+/// The chords this profile has invented, most recent last.
++ (NSArray<KeyItem *> *)customChordsForProfile:(nullable NSString *)profileKey;
 
 + (void)resetPadForProfile:(nullable NSString *)profileKey;
 + (BOOL)padIsCustomisedForProfile:(nullable NSString *)profileKey;

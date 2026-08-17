@@ -72,6 +72,38 @@ NSString * const KeyAppJumpPrefix = @"→";
     return item;
 }
 
+/// macOS writes a chord Control, Option, Shift, Command, in that order, whatever order you press
+/// them in. Following it means a chord the user built reads the same as the same chord printed in
+/// a menu on the far end — and, less visibly, that the label is a function of the chord alone, so
+/// it can be used as the identity everywhere a catalogue label is.
+NSString *KeyModifierSymbols(UIKeyModifierFlags flags) {
+    NSMutableString *symbols = [NSMutableString string];
+    if (flags & UIKeyModifierControl) {
+        [symbols appendString:@"⌃"];
+    }
+    if (flags & UIKeyModifierAlternate) {
+        [symbols appendString:@"⌥"];
+    }
+    if (flags & UIKeyModifierShift) {
+        [symbols appendString:@"⇧"];
+    }
+    if (flags & UIKeyModifierCommand) {
+        [symbols appendString:@"⌘"];
+    }
+    return symbols;
+}
+
++ (instancetype)custom:(UIKeyModifierFlags)flags code:(short)virtualKey named:(NSString *)keyName {
+    NSString *label = [KeyModifierSymbols(flags) stringByAppendingString:keyName];
+    KeyItem *item = [self itemWithLabel:label kind:KeyItemKindMacro code:virtualKey flags:flags];
+    // Kept as a macro rather than given a kind of its own: it behaves exactly like one when
+    // pressed, and a new kind would mean touching every switch that handles them. The flag is
+    // only for deciding whether the definition needs storing.
+    item->_isCustom = YES;
+    item->_detail = @"Your own";
+    return item;
+}
+
 - (instancetype)copyOfSelf {
     KeyItem *copy = [KeyItem itemWithLabel:_label kind:_kind code:_virtualKey flags:_modifiers];
     copy->_steps = _steps;
@@ -79,6 +111,7 @@ NSString * const KeyAppJumpPrefix = @"→";
     copy->_detail = _detail;
     copy->_wantsKeyboard = _wantsKeyboard;
     copy->_appName = _appName;
+    copy->_isCustom = _isCustom;
     return copy;
 }
 
@@ -185,6 +218,9 @@ static NSString *KeyHiddenDefaultsKey(NSString *profileKey) {
             [KeyItem key:@"↵" code:0x0D],
             [KeyItem key:@"⌫" code:0x08],
             [KeyItem key:@"⌦" code:0x2E],
+            // Redundant on the line above the system keyboard, which has a space bar of its own,
+            // and the only way to type one from the floating pad once that keyboard is gone.
+            [KeyItem key:@"␣" code:0x20],
         ]],
         // Ahead of the arrows, because this is what they are for: an input method on the host
         // numbers its candidates and you pick one by pressing the number. Reaching them meant
@@ -457,15 +493,79 @@ static NSString * const KeyPadMigrationKey = @"KeyBar.padMigratedFromTmuxDefault
     return byLabel;
 }
 
+/// Where an invented chord's definition lives: label -> {modifiers, key}.
+///
+/// Beside the pad rather than inside it, because the pad is a list of labels and a label is all
+/// the catalogue ever needed. Nothing can look up a chord that was invented, so the one thing
+/// that cannot be recovered — what it does — is kept here under the same label.
+static NSString *KeyCustomDefaultsKey(NSString *profileKey) {
+    return [NSString stringWithFormat:@"KeyBar.%@.custom",
+            profileKey.length > 0 ? profileKey : @"default"];
+}
+
++ (NSDictionary<NSString *, NSDictionary *> *)storedCustomChordsForProfile:(NSString *)profileKey {
+    NSDictionary *stored = [[NSUserDefaults standardUserDefaults]
+                            dictionaryForKey:KeyCustomDefaultsKey(profileKey)];
+    return [stored isKindOfClass:[NSDictionary class]] ? stored : @{};
+}
+
+/// Rebuilds the item a stored definition describes, or nil if the entry is not one.
++ (KeyItem *)customChordFromEntry:(id)entry label:(NSString *)label {
+    if (![entry isKindOfClass:[NSDictionary class]]) {
+        return nil;
+    }
+    NSNumber *flags = entry[@"flags"];
+    NSNumber *code = entry[@"code"];
+    if (![flags isKindOfClass:[NSNumber class]] || ![code isKindOfClass:[NSNumber class]]) {
+        return nil;
+    }
+    // The name is whatever the label has left once the modifier symbols are stripped, so the
+    // label stays the single source of what this is called.
+    NSString *symbols = KeyModifierSymbols((UIKeyModifierFlags) flags.unsignedIntegerValue);
+    NSString *name = [label hasPrefix:symbols] ? [label substringFromIndex:symbols.length] : label;
+    return [KeyItem custom:(UIKeyModifierFlags) flags.unsignedIntegerValue
+                      code:(short) code.integerValue
+                     named:name];
+}
+
++ (NSArray<KeyItem *> *)customChordsForProfile:(NSString *)profileKey {
+    NSDictionary<NSString *, NSDictionary *> *stored = [self storedCustomChordsForProfile:profileKey];
+    NSMutableArray<KeyItem *> *items = [NSMutableArray array];
+    // Sorted by label so the menu does not reshuffle itself between openings.
+    for (NSString *label in [stored.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+        KeyItem *item = [self customChordFromEntry:stored[label] label:label];
+        if (item != nil) {
+            [items addObject:item];
+        }
+    }
+    return items;
+}
+
++ (void)addCustomChord:(KeyItem *)item forProfile:(NSString *)profileKey host:(KeyMacroHost)host {
+    NSMutableDictionary *stored = [[self storedCustomChordsForProfile:profileKey] mutableCopy];
+    stored[item.label] = @{@"flags": @(item.modifiers), @"code": @(item.virtualKey)};
+    [[NSUserDefaults standardUserDefaults] setObject:stored
+                                              forKey:KeyCustomDefaultsKey(profileKey)];
+    [self addToPad:item forProfile:profileKey host:host];
+}
+
 + (NSArray<KeyItem *> *)padItemsForHost:(KeyMacroHost)host profileKey:(NSString *)profileKey {
     NSArray<NSString *> *labels = [self storedPadLabelsForProfile:profileKey]
                                   ?: [self defaultPadLabelsForHost:host];
     NSDictionary<NSString *, KeyItem *> *byLabel = [self catalogueByLabelForHost:host];
+    NSDictionary<NSString *, NSDictionary *> *custom = [self storedCustomChordsForProfile:profileKey];
 
     NSMutableArray<KeyItem *> *items = [NSMutableArray array];
     for (NSString *label in labels) {
         if ([label hasPrefix:KeyAppJumpPrefix]) {
             [items addObject:[KeyItem appJump:[label substringFromIndex:KeyAppJumpPrefix.length]]];
+            continue;
+        }
+        // Invented chords first: a label the user built is theirs, and should not be shadowed by
+        // a catalogue entry that happens to be written the same way.
+        KeyItem *invented = [self customChordFromEntry:custom[label] label:label];
+        if (invented != nil) {
+            [items addObject:invented];
             continue;
         }
         // Silently skips anything this host's catalogue does not have, which is what should

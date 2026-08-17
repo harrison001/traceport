@@ -1246,11 +1246,155 @@ typedef NS_ENUM(NSInteger, KeyBarLayout) {
         }
     }
 
+    [categories addObject:[self customChordMenuAlreadyOnPad:onPad]];
+
     return [UIMenu menuWithTitle:@"Keys"
                            image:[UIImage systemImageNamed:@"list.bullet"]
                       identifier:nil
                          options:0
                         children:categories];
+}
+
+/// The keys a chord can be built on. Windows virtual key codes, which is what the protocol wants.
++ (NSArray<NSArray *> *)chordKeyGroups {
+    NSMutableArray<NSArray *> *letters = [NSMutableArray array];
+    for (unichar c = 'A'; c <= 'Z'; c++) {
+        [letters addObject:@[[NSString stringWithCharacters:&c length:1], @(c)]];
+    }
+    NSMutableArray<NSArray *> *digits = [NSMutableArray array];
+    for (unichar c = '0'; c <= '9'; c++) {
+        [digits addObject:@[[NSString stringWithCharacters:&c length:1], @(c)]];
+    }
+    NSMutableArray<NSArray *> *function = [NSMutableArray array];
+    for (int i = 1; i <= 12; i++) {
+        [function addObject:@[[NSString stringWithFormat:@"F%d", i], @(0x70 + i - 1)]];
+    }
+
+    return @[
+        @[@"Letters", letters],
+        @[@"Digits", digits],
+        @[@"Function", function],
+        @[@"Other", @[
+            @[@"␣", @0x20], @[@"⇥", @0x09], @[@"↵", @0x0D], @[@"esc", @0x1B],
+            @[@"⌫", @0x08], @[@"⌦", @0x2E],
+            @[@"←", @0x25], @[@"↑", @0x26], @[@"→", @0x27], @[@"↓", @0x28],
+            @[@"↖", @0x24], @[@"↘", @0x23], @[@"⇞", @0x21], @[@"⇟", @0x22],
+            @[@"`", @0xC0], @[@"-", @0xBD], @[@"=", @0xBB],
+            @[@"[", @0xDB], @[@"]", @0xDD], @[@"\\", @0xDC],
+            @[@";", @0xBA], @[@"'", @0xDE],
+            @[@",", @0xBC], @[@".", @0xBE], @[@"/", @0xBF],
+        ]],
+    ];
+}
+
+/// Every combination of the four modifiers, commonest first.
+///
+/// Offered as a list rather than as toggles because a menu cannot hold state on the iOS versions
+/// this still supports, and two taps through a list beats a sheet that has to be built, presented
+/// and dismissed over a live stream.
++ (NSArray<NSNumber *> *)chordModifierCombinations {
+    return @[
+        @(UIKeyModifierCommand),
+        @(UIKeyModifierControl),
+        @(UIKeyModifierAlternate),
+        @(UIKeyModifierShift),
+        @(UIKeyModifierShift | UIKeyModifierCommand),
+        @(UIKeyModifierControl | UIKeyModifierCommand),
+        @(UIKeyModifierAlternate | UIKeyModifierCommand),
+        @(UIKeyModifierControl | UIKeyModifierShift),
+        @(UIKeyModifierAlternate | UIKeyModifierShift),
+        @(UIKeyModifierControl | UIKeyModifierAlternate),
+        @(UIKeyModifierControl | UIKeyModifierShift | UIKeyModifierCommand),
+        @(UIKeyModifierAlternate | UIKeyModifierShift | UIKeyModifierCommand),
+        @(UIKeyModifierControl | UIKeyModifierAlternate | UIKeyModifierCommand),
+        @(UIKeyModifierControl | UIKeyModifierAlternate | UIKeyModifierShift),
+        @(UIKeyModifierControl | UIKeyModifierAlternate | UIKeyModifierShift | UIKeyModifierCommand),
+    ];
+}
+
+/// Build your own chord, and whatever you have built already.
+///
+/// The catalogue can only ever hold what someone thought of in advance. This is the escape from
+/// that: pick the modifiers, pick the key, and it goes on the pad like anything else.
+- (UIMenu *)customChordMenuAlreadyOnPad:(NSSet<NSString *> *)onPad {
+    __weak KeyBarView *weakSelf = self;
+    NSMutableArray<UIMenuElement *> *children = [NSMutableArray array];
+
+    // What has been built before, so it can go back on the pad without being built again.
+    NSMutableArray<UIAction *> *mine = [NSMutableArray array];
+    for (KeyItem *item in [KeyMacros customChordsForProfile:self.profileKeyForMenu]) {
+        BOOL isOn = [onPad containsObject:item.label];
+        UIAction *action = [UIAction actionWithTitle:item.label
+                                               image:nil
+                                          identifier:nil
+                                             handler:^(__kindof UIAction *sender) {
+            if (isOn) {
+                [KeyMacros removeFromPad:item forProfile:weakSelf.profileKeyForMenu
+                                    host:weakSelf.hostKind];
+            } else {
+                [KeyMacros addCustomChord:item forProfile:weakSelf.profileKeyForMenu
+                                     host:weakSelf.hostKind];
+            }
+            [weakSelf.padDelegate keyBarPadDidChange];
+            [weakSelf reloadGroups];
+        }];
+        action.state = isOn ? UIMenuElementStateOn : UIMenuElementStateOff;
+        [mine addObject:action];
+    }
+    if (mine.count > 0) {
+        [children addObject:[UIMenu menuWithTitle:@""
+                                            image:nil
+                                       identifier:nil
+                                          options:UIMenuOptionsDisplayInline
+                                         children:mine]];
+    }
+
+    NSMutableArray<UIMenuElement *> *combinations = [NSMutableArray array];
+    for (NSNumber *flags in [KeyBarView chordModifierCombinations]) {
+        UIKeyModifierFlags modifiers = (UIKeyModifierFlags) flags.unsignedIntegerValue;
+
+        NSMutableArray<UIMenuElement *> *groups = [NSMutableArray array];
+        for (NSArray *group in [KeyBarView chordKeyGroups]) {
+            NSMutableArray<UIAction *> *keys = [NSMutableArray array];
+            for (NSArray *key in group[1]) {
+                NSString *name = key[0];
+                short code = (short) [key[1] integerValue];
+                [keys addObject:[UIAction actionWithTitle:name
+                                                    image:nil
+                                               identifier:nil
+                                                  handler:^(__kindof UIAction *sender) {
+                    KeyItem *item = [KeyItem custom:modifiers code:code named:name];
+                    [KeyMacros addCustomChord:item forProfile:weakSelf.profileKeyForMenu
+                                         host:weakSelf.hostKind];
+                    [weakSelf.padDelegate keyBarPadDidChange];
+                    [weakSelf reloadGroups];
+                }]];
+            }
+            [groups addObject:[UIMenu menuWithTitle:group[0]
+                                              image:nil
+                                         identifier:nil
+                                            options:0
+                                           children:keys]];
+        }
+
+        [combinations addObject:[UIMenu menuWithTitle:KeyModifierSymbols(modifiers)
+                                                image:nil
+                                           identifier:nil
+                                              options:0
+                                             children:groups]];
+    }
+
+    [children addObject:[UIMenu menuWithTitle:@"New…"
+                                        image:nil
+                                   identifier:nil
+                                      options:0
+                                     children:combinations]];
+
+    return [UIMenu menuWithTitle:@"Custom"
+                           image:nil
+                      identifier:nil
+                         options:0
+                        children:children];
 }
 
 - (NSString *)profileKeyForMenu {
