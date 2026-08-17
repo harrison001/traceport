@@ -395,31 +395,42 @@ static NSString *KeyPadDefaultsKey(NSString *profileKey) {
             profileKey.length > 0 ? profileKey : @"default"];
 }
 
-/// The tmux keys stopped being defaults, but a pad that had already been customised kept them:
-/// the stored list is the whole pad, so it carried the old defaults along with whatever was
-/// added. Resetting would take the additions with it, so drop just these instead.
+/// A stored pad is a list of labels, so a label is an identity: rename one in the catalogue and
+/// the stored entry stops resolving and the key quietly disappears. Two things happened at once
+/// that a stored list could not survive — the tmux keys stopped being defaults, and two labels
+/// were shortened — so bring an old list forward rather than leaving holes in it.
 ///
-/// Once, and only for keys nobody chose. Anyone who wants them can add them back from the
-/// catalogue, where they still are, and a list they have edited since is left alone.
-static NSString * const KeyPadTmuxPurgeKey = @"KeyBar.tmuxRemovedFromDefaults";
+/// Resetting the pad would do this too and take everything the user added with it, which is the
+/// reason for doing it here instead. Once, and never again afterwards, so a list edited since is
+/// left alone.
+static NSString * const KeyPadMigrationKey = @"KeyBar.padMigratedFromTmuxDefaults";
 
 + (NSArray<NSString *> *)storedPadLabelsForProfile:(NSString *)profileKey {
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
     NSArray<NSString *> *stored = [defaults stringArrayForKey:KeyPadDefaultsKey(profileKey)];
-    if (stored == nil || [defaults boolForKey:KeyPadTmuxPurgeKey]) {
+    if (stored == nil || [defaults boolForKey:KeyPadMigrationKey]) {
         return stored;
     }
 
+    // Dropped: the right pad for exactly one person. The catalogue still has them.
     NSSet<NSString *> *retired = [NSSet setWithArray:@[@"⌃AZ", @"⌃AB", @"⌃A←", @"⌃A→"]];
+    // Renamed to what the keys themselves are printed with, and narrower for it.
+    NSDictionary<NSString *, NSString *> *renamed = @{
+        @"⌘Spc": @"⌘␣",
+        @"⌘Tab": @"⌘⇥",
+        @"⇧⌘Tab": @"⇧⌘⇥",
+    };
+
     NSMutableArray<NSString *> *kept = [NSMutableArray array];
     for (NSString *label in stored) {
-        if (![retired containsObject:label]) {
-            [kept addObject:label];
+        if ([retired containsObject:label]) {
+            continue;
         }
+        [kept addObject:renamed[label] ?: label];
     }
 
-    [defaults setBool:YES forKey:KeyPadTmuxPurgeKey];
-    if (kept.count == stored.count) {
+    [defaults setBool:YES forKey:KeyPadMigrationKey];
+    if ([kept isEqualToArray:stored]) {
         return stored;
     }
     [self storePadLabels:kept forProfile:profileKey];

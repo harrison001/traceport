@@ -620,16 +620,27 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
 - (CGFloat)keyBarMarginWidth {
     UIView *host = [self keyBarHostView];
     CGFloat width = host.bounds.size.width;
+    CGFloat height = host.bounds.size.height;
     CGFloat letterbox = (width - [self getVideoAreaSize].width) / 2;
-    if (letterbox < [KeyBarView barThickness]) {
-        return 0;
-    }
 
     // Enough for two keys side by side at their natural size, and never so much that the columns
     // start covering something worth seeing.
     static const CGFloat comfortable = 140;
     static const CGFloat mostOfScreen = 0.16;
-    return MAX(letterbox, MIN(comfortable, width * mostOfScreen));
+    CGFloat wanted = MIN(comfortable, width * mostOfScreen);
+
+    if (letterbox >= [KeyBarView barThickness]) {
+        return MAX(letterbox, wanted);
+    }
+
+    // No letterbox at all, which is what asking for the screen's own resolution gets you. The keys
+    // go over the picture rather than not existing: they are translucent and they sit in the two
+    // strips furthest from the middle, which is where this app's own on-screen controls already
+    // float. Losing them entirely is the worse trade.
+    //
+    // Landscape only. Down the sides of a portrait screen the same strips are a third of the
+    // width and there is nowhere for them to be out of the way.
+    return width > height ? wanted : 0;
 }
 
 /// Pins the keyboard line along the bottom. Only reached where there is no pad, since with a
