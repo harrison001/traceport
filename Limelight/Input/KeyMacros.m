@@ -307,8 +307,8 @@ static NSString *KeyHiddenDefaultsKey(NSString *profileKey) {
         UIKeyModifierFlags cmd = UIKeyModifierCommand;
         UIKeyModifierFlags ctrl = UIKeyModifierControl;
         return [KeyGroup groupNamed:@"Windows" items:@[
-            [[KeyItem macro:@"⌘Tab" code:0x09 flags:cmd] explained:@"Previous app"],
-            [[KeyItem macro:@"⇧⌘Tab" code:0x09 flags:cmd | shift] explained:@"App switcher, back"],
+            [[KeyItem macro:@"⌘⇥" code:0x09 flags:cmd] explained:@"Previous app"],
+            [[KeyItem macro:@"⇧⌘⇥" code:0x09 flags:cmd | shift] explained:@"App switcher, back"],
             [[KeyItem macro:@"⌘`" code:0xC0 flags:cmd] explained:@"Cycle this app's windows"],
             [[KeyItem macro:@"⌘W" code:0x57 flags:cmd] explained:@"Close the window"],
             [[KeyItem macro:@"⌘Q" code:0x51 flags:cmd] explained:@"Quit the app"],
@@ -319,7 +319,7 @@ static NSString *KeyHiddenDefaultsKey(NSString *profileKey) {
             [[KeyItem macro:@"⌃→" code:0x27 flags:ctrl] explained:@"Next desktop"],
             [[KeyItem macro:@"⌃↑" code:0x26 flags:ctrl] explained:@"Mission Control"],
             [[KeyItem macro:@"⌃↓" code:0x28 flags:ctrl] explained:@"App Exposé"],
-            [[[KeyItem macro:@"⌘Spc" code:0x20 flags:cmd] explained:@"Spotlight — type to search"]
+            [[[KeyItem macro:@"⌘␣" code:0x20 flags:cmd] explained:@"Spotlight — type to search"]
               needingKeyboard],
             [[KeyItem macro:@"⇧⌘4" code:0x34 flags:cmd | shift] explained:@"Screenshot a selection"],
         ]];
@@ -363,20 +363,29 @@ static NSString *KeyHiddenDefaultsKey(NSString *profileKey) {
 
 /// What the pad holds before anyone changes it.
 ///
-/// Deliberately short. The pad is a handful of things worth reaching without thinking, not a
-/// second keyboard: window switching, the tmux commands this is driven with, and the input
-/// source toggle that unblocks them. Everything else is two taps away in the add menu.
+/// Deliberately short, and deliberately general. The pad is a handful of things worth reaching
+/// without thinking, not a second keyboard; everything else is two taps away in the add menu.
+///
+/// Sixteen keys, eight to a column, which is four rows each once they pair up.
+///
+/// The tmux commands that used to be here are not: they are the right defaults for exactly one
+/// person, and anyone who lives in tmux can add them back faster than everyone else can clear
+/// them out. Copy, paste, undo and scrolling are wanted by whoever is holding the phone.
 + (NSArray<NSString *> *)defaultPadLabelsForHost:(KeyMacroHost)host {
     if (host == KeyMacroHostMacOS) {
         return @[
             // Left column: getting to a program or a window, which is what a phone is worst at
             // and needs most — there is no Dock to click and no second monitor to glance at.
-            @"⌘Spc", @"⌘Tab", @"⌘`", @"⌃↑", @"⌃↓", @"⌃⌘F", @"⌃←", @"⌃→",
-            // Right column: what happens once you are there.
-            @"⌃AZ", @"⌃AB", @"⌃A←", @"⌃A→", @"中/A", @"∧", @"∨",
+            @"⌘␣", @"⌘⇥", @"⌘`", @"⌃←", @"⌃→", @"⌃↑", @"⌃↓", @"⌃⌘F",
+            // Right column: what happens once you are there. Scrolling is on it because a phone
+            // has no wheel, and the input source toggle because nothing else reaches it.
+            @"⌘C", @"⌘V", @"⌘Z", @"⌘A", @"⌘W", @"中/A", @"∧", @"∨",
         ];
     }
-    return @[@"⊞", @"⎇Tab", @"⊞Tab", @"⊞D", @"⊞E", @"⎇F4", @"⌃C", @"⌃V", @"∧", @"∨"];
+    return @[
+        @"⊞", @"⎇Tab", @"⊞Tab", @"⊞D", @"⊞E", @"⎇F4",
+        @"⌃C", @"⌃V", @"⌃Z", @"⌃A", @"∧", @"∨",
+    ];
 }
 
 /// Items are stored by label. Labels are unique within a host's catalogue and survive a
@@ -386,8 +395,35 @@ static NSString *KeyPadDefaultsKey(NSString *profileKey) {
             profileKey.length > 0 ? profileKey : @"default"];
 }
 
+/// The tmux keys stopped being defaults, but a pad that had already been customised kept them:
+/// the stored list is the whole pad, so it carried the old defaults along with whatever was
+/// added. Resetting would take the additions with it, so drop just these instead.
+///
+/// Once, and only for keys nobody chose. Anyone who wants them can add them back from the
+/// catalogue, where they still are, and a list they have edited since is left alone.
+static NSString * const KeyPadTmuxPurgeKey = @"KeyBar.tmuxRemovedFromDefaults";
+
 + (NSArray<NSString *> *)storedPadLabelsForProfile:(NSString *)profileKey {
-    return [[NSUserDefaults standardUserDefaults] stringArrayForKey:KeyPadDefaultsKey(profileKey)];
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    NSArray<NSString *> *stored = [defaults stringArrayForKey:KeyPadDefaultsKey(profileKey)];
+    if (stored == nil || [defaults boolForKey:KeyPadTmuxPurgeKey]) {
+        return stored;
+    }
+
+    NSSet<NSString *> *retired = [NSSet setWithArray:@[@"⌃AZ", @"⌃AB", @"⌃A←", @"⌃A→"]];
+    NSMutableArray<NSString *> *kept = [NSMutableArray array];
+    for (NSString *label in stored) {
+        if (![retired containsObject:label]) {
+            [kept addObject:label];
+        }
+    }
+
+    [defaults setBool:YES forKey:KeyPadTmuxPurgeKey];
+    if (kept.count == stored.count) {
+        return stored;
+    }
+    [self storePadLabels:kept forProfile:profileKey];
+    return kept;
 }
 
 + (void)storePadLabels:(NSArray<NSString *> *)labels forProfile:(NSString *)profileKey {

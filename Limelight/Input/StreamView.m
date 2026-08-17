@@ -605,10 +605,31 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
 /// The letterbox is the difference between the shape of the stream and the shape of the
 /// screen. A 1512x982 Mac desktop on an iPhone in landscape leaves 139pt each side; the same
 /// desktop on an iPad leaves about 4pt, and there the bar has to cover picture instead.
+/// How wide the columns beside the picture may be.
+///
+/// Wider than the letterbox this view can measure, because that measurement understates the black
+/// by a long way. A host desktop that is not the shape of the stream gets its own bars encoded
+/// into the frame: a 1512x982 desktop inside a 16:9 stream carries about 7% of the frame width as
+/// black down each side, and to this view that is picture. Here it came to 84pt of letterbox
+/// against 137pt of black actually on screen, so the keys were crammed into three fifths of the
+/// room they had.
+///
+/// A share of the screen rather than a measurement, then, since what is really available cannot
+/// be measured from this side. The keys are translucent and the strip is black in every case that
+/// matters, so being a little wide costs nothing; being narrow wastes half the space.
 - (CGFloat)keyBarMarginWidth {
     UIView *host = [self keyBarHostView];
-    CGFloat margin = (host.bounds.size.width - [self getVideoAreaSize].width) / 2;
-    return margin >= [KeyBarView barThickness] ? margin : 0;
+    CGFloat width = host.bounds.size.width;
+    CGFloat letterbox = (width - [self getVideoAreaSize].width) / 2;
+    if (letterbox < [KeyBarView barThickness]) {
+        return 0;
+    }
+
+    // Enough for two keys side by side at their natural size, and never so much that the columns
+    // start covering something worth seeing.
+    static const CGFloat comfortable = 140;
+    static const CGFloat mostOfScreen = 0.16;
+    return MAX(letterbox, MIN(comfortable, width * mostOfScreen));
 }
 
 /// Pins the keyboard line along the bottom. Only reached where there is no pad, since with a

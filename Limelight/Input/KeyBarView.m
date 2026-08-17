@@ -55,6 +55,31 @@ static const CGFloat phoneGroupSpacing = 24;
 static CGFloat const rowVerticalInset = 8;
 static const CGFloat rowHorizontalInset = 12;
 
+/// Label sizes. The columns use whatever of these two fits (see splitFontSize).
+static const CGFloat padFontSize = 19;
+static const CGFloat phoneFontSize = 16;
+
+/// Below this a key cannot be read at arm's length, and an unreadable key is worse than one
+/// that has a row to itself.
+static const CGFloat minimumSplitFontSize = 13;
+
+/// A label this short is a chord — "⌘␣", "⇧⌘4", "中/A" — and is expected to share a row.
+/// Anything longer is a name like "Mission Control", which never will.
+static const NSUInteger chordLabelLength = 4;
+
+/// Padding inside a column, which is charged four times across a row of two — twice at the
+/// column's edges and twice inside each key.
+///
+/// The ordinary 8pt of each spends 54 of the 87 points a 16:9 stream leaves beside it on a phone,
+/// which left 33 points for two labels and is why almost nothing paired. These are the widths a
+/// column can actually afford.
+static const CGFloat splitColumnInset = 4;
+static const CGFloat splitKeyInset = 3;
+
+/// Shrinking past the point where most keys pair buys nothing and costs legibility: one stubborn
+/// label like "⌃⌘F" should take a row of its own rather than drag the type down for all of them.
+static const CGFloat splitPairingTarget = 0.75;
+
 @interface KeyBarButton : UIButton
 @property (nonatomic, strong) KeyItem *item;
 @property (nonatomic, assign) KeyBarModifierState modifierState;
@@ -493,7 +518,7 @@ typedef NS_ENUM(NSInteger, KeyBarLayout) {
 
     stack.axis = _axis;
     stack.layoutMargins = vertical
-        ? UIEdgeInsetsMake(rowHorizontalInset, rowVerticalInset, rowHorizontalInset, rowVerticalInset)
+        ? UIEdgeInsetsMake(rowHorizontalInset, splitColumnInset, rowHorizontalInset, splitColumnInset)
         : UIEdgeInsetsMake(rowVerticalInset, rowHorizontalInset, rowVerticalInset, rowHorizontalInset);
 
     NSMutableArray<NSLayoutConstraint *> *constraints = [NSMutableArray arrayWithArray:@[
@@ -576,6 +601,60 @@ typedef NS_ENUM(NSInteger, KeyBarLayout) {
     [self restoreModifierAppearance];
 }
 
+/// The largest label size at which two chords still fit side by side in a column.
+///
+/// The size used to be fixed, so whether the pad packed two to a row depended on how wide the
+/// letterbox happened to be. On anything narrower than about 148pt almost every key came out on
+/// its own row — the arrangement the columns exist to avoid. Deriving the size from the width it
+/// has to fit makes two-up the rule rather than a coincidence, and gives up type only as far as
+/// that takes.
+///
+/// Measured against the chords alone: a macro named "Mission Control" is never going to share a
+/// row, and should not drag every other key down with it.
+- (CGFloat)splitFontSize {
+    CGFloat natural = [KeyBarView isPad] ? padFontSize : phoneFontSize;
+    if (_layout != KeyBarLayoutSplit || _marginWidth <= 0) {
+        return natural;
+    }
+
+    NSMutableArray<NSString *> *chords = [NSMutableArray array];
+    for (KeyGroup *group in _groups) {
+        for (KeyItem *item in group.items) {
+            if (item.label.length <= chordLabelLength) {
+                [chords addObject:item.label];
+            }
+        }
+    }
+    if (chords.count == 0) {
+        return natural;
+    }
+
+    CGFloat budget = [self splitLabelBudget];
+
+    // Stepped and measured rather than scaled from the natural size: a font's advance widths do
+    // not fall exactly in proportion to its point size, and an estimate that lands one point too
+    // large costs the row it was trying to save.
+    for (CGFloat size = natural; size >= minimumSplitFontSize; size -= 1) {
+        UIFont *font = [UIFont systemFontOfSize:size weight:UIFontWeightMedium];
+        NSUInteger fitting = 0;
+        for (NSString *label in chords) {
+            if (ceil([label sizeWithAttributes:@{NSFontAttributeName: font}].width) <= budget) {
+                fitting++;
+            }
+        }
+        if ((CGFloat)fitting / chords.count >= splitPairingTarget) {
+            return size;
+        }
+    }
+    return minimumSplitFontSize;
+}
+
+/// How wide a label may be and still share a row, once the column's own padding and the key's
+/// have been taken out of it.
+- (CGFloat)splitLabelBudget {
+    return (_marginWidth - splitColumnInset * 2 - keySpacing) / 2 - splitKeyInset * 2;
+}
+
 /// Packs a group into rows two keys wide, giving a row of its own to anything whose label will
 /// not fit in half a column.
 ///
@@ -584,17 +663,16 @@ typedef NS_ENUM(NSInteger, KeyBarLayout) {
 /// labelled with two or three characters and waste most of a 139pt row. Long macro names like
 /// "Mission Control" still take the full width, so nothing is truncated to fit.
 - (NSArray<NSArray<KeyItem *> *> *)packItems:(NSArray<KeyItem *> *)items {
-    CGFloat inner = _marginWidth - rowVerticalInset * 2;
-    CGFloat half = (inner - keySpacing) / 2;
-    UIFont *font = [UIFont systemFontOfSize:[KeyBarView isPad] ? 19 : 16 weight:UIFontWeightMedium];
+    CGFloat budget = [self splitLabelBudget];
+    UIFont *font = [UIFont systemFontOfSize:[self splitFontSize] weight:UIFontWeightMedium];
 
     BOOL (^fitsHalf)(KeyItem *) = ^BOOL(KeyItem *item) {
-        // A little under buttonWithTitle:'s 8pt inset each side: the label may shrink to 80%
-        // before it truncates, so a label that misses by a point still reads perfectly. Being
-        // strict here costs a whole row — "Zoom" overhangs by one point, and paying a row for
-        // it also pushes the four pane arrows out of their natural pairs.
+        // Measured against the same budget the size was chosen for, and generously: a label may
+        // shrink to 80% before it truncates, so one that misses by a point still reads perfectly.
+        // Being strict costs a whole row — "Zoom" overhangs by one point, and paying a row for it
+        // also pushes the four pane arrows out of their natural pairs.
         CGSize size = [item.label sizeWithAttributes:@{NSFontAttributeName: font}];
-        return ceil(size.width) + 12 <= half;
+        return ceil(size.width) <= budget + 2;
     };
 
     NSMutableArray<NSArray<KeyItem *> *> *rows = [NSMutableArray array];
@@ -755,20 +833,26 @@ typedef NS_ENUM(NSInteger, KeyBarLayout) {
 - (KeyBarButton *)buttonWithTitle:(NSString *)title wide:(BOOL)wide {
     KeyBarButton *button = [KeyBarButton buttonWithType:UIButtonTypeSystem];
     [button setTitle:title forState:UIControlStateNormal];
-    button.titleLabel.font = [UIFont systemFontOfSize:[KeyBarView isPad] ? 19 : 16
-                                               weight:UIFontWeightMedium];
+    button.titleLabel.font = [UIFont systemFontOfSize:[self splitFontSize] weight:UIFontWeightMedium];
     button.titleLabel.adjustsFontSizeToFitWidth = YES;
     button.titleLabel.minimumScaleFactor = 0.8;
     button.layer.cornerRadius = 8;
-    button.contentEdgeInsets = UIEdgeInsetsMake(0, 8, 0, 8);
+    BOOL split = _layout == KeyBarLayoutSplit;
+    button.contentEdgeInsets = split ? UIEdgeInsetsMake(0, splitKeyInset, 0, splitKeyInset)
+                                     : UIEdgeInsetsMake(0, 8, 0, 8);
     button.backgroundColor = KeyBarNormalKeyColor();
     button.tintColor = [UIColor labelColor];
 
     [button.heightAnchor constraintEqualToConstant:[KeyBarView keyHeight]].active = YES;
 
+    // The extra width a longer label asks for is what kept two keys from sharing a row: two keys
+    // at 1.3x plus the gap come to more than a column is wide, so the row broke apart even when
+    // both labels would have fitted. In a column the row divides the width equally anyway, and
+    // even the ordinary minimum is wider than half of one, so neither applies there.
+    //
     // High rather than required: three controls at their natural widths do not fit across a
     // 139pt column, and shrinking them is better than breaking the layout.
-    CGFloat width = [KeyBarView keyWidth] * (wide ? 1.3 : 1.0);
+    CGFloat width = split ? 0 : [KeyBarView keyWidth] * (wide ? 1.3 : 1.0);
     NSLayoutConstraint *minimum = [button.widthAnchor constraintGreaterThanOrEqualToConstant:width];
     minimum.priority = UILayoutPriorityDefaultHigh;
     minimum.active = YES;
