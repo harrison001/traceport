@@ -191,6 +191,22 @@ extern NSString *KeyModifierSymbols(UIKeyModifierFlags flags);
 /// The client cannot discover this on its own: Sunshine's /serverinfo carries no platform
 /// field, so there is nothing to read and nothing to infer that would not be a guess. It is
 /// therefore a setting, remembered per host, and macOS until told otherwise.
+/// Moves everything stored under an address-built key onto the host's stable identity, and clears
+/// the address-built keys out afterwards.
+///
+/// The keys used to be built from the host's active address, which is whichever of its addresses
+/// answered discovery first. One machine had four: a LAN address, a Tailscale address, a MagicDNS
+/// name and an IPv6 literal. A layout saved under one was invisible under the others, so the pad
+/// looked as though it reset itself between connections.
+///
+/// Adopts from the first of @c legacyProfiles that has anything — the address in use comes first,
+/// so it is the layout that was in front of the user that survives — and only into a profile with
+/// nothing in it, so it can never overwrite. Running it on every connection is harmless.
++ (void)adoptLegacyProfiles:(nullable NSArray<NSString *> *)legacyProfiles
+                   hostKeys:(nullable NSArray<NSString *> *)legacyHostKeys
+                intoProfile:(nullable NSString *)profile
+                    hostKey:(nullable NSString *)hostKey;
+
 + (KeyMacroHost)hostKindForKey:(nullable NSString *)key;
 + (void)setHostKind:(KeyMacroHost)kind forKey:(nullable NSString *)key;
 

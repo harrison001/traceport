@@ -78,11 +78,17 @@ typedef NS_ENUM(NSInteger, KeyBarContent) {
 /// on screen the controls belong there, because the pad is the one that is always visible.
 @property (nonatomic, assign) BOOL showsControls;
 
-/// @param hostKey Identifies the host, so which operating system it runs is remembered per machine.
+/// @param hostKey Identifies the host, so its layout and which operating system it runs are
+///                remembered per machine. Must not be built from an address: the same machine
+///                answers on a different one over Tailscale than it does on the LAN.
+/// @param legacyHostKeys Every address form this host is known by, the one in use first. Earlier
+///                       builds keyed on these; anything stored under them is adopted once and
+///                       then cleared.
 /// @param appName The app launched on the host, if any. Gives each app its own pad, the way
 ///                Stream Deck switches profiles by which application is in front.
 - (instancetype)initWithFrame:(CGRect)frame
                       hostKey:(nullable NSString *)hostKey
+               legacyHostKeys:(nullable NSArray<NSString *> *)legacyHostKeys
                       appName:(nullable NSString *)appName
                       content:(KeyBarContent)content;
 

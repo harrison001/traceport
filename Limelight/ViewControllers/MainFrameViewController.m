@@ -604,6 +604,16 @@ static NSMutableSet* hostList;
 - (void) prepareToStreamApp:(TemporaryApp *)app {
     _streamConfig = [[StreamConfiguration alloc] init];
     _streamConfig.host = app.host.activeAddress;
+    _streamConfig.hostUuid = app.host.uuid;
+    NSMutableArray<NSString *> *addresses = [NSMutableArray array];
+    for (NSString *address in @[app.host.activeAddress ?: @"", app.host.localAddress ?: @"",
+                                app.host.address ?: @"", app.host.externalAddress ?: @"",
+                                app.host.ipv6Address ?: @""]) {
+        if (address.length > 0 && ![addresses containsObject:address]) {
+            [addresses addObject:address];
+        }
+    }
+    _streamConfig.hostAddresses = addresses;
     _streamConfig.httpsPort = app.host.httpsPort;
     _streamConfig.appID = app.id;
     _streamConfig.appName = app.name;

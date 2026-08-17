@@ -641,6 +641,75 @@ static NSString *KeyMacroHostDefaultsKey(NSString *key) {
     return [NSString stringWithFormat:@"KeyBarHostKind.%@", key.length > 0 ? key : @"default"];
 }
 
+typedef NSString *(^KeyDefaultsKeyBuilder)(NSString *profileKey);
+
+/// The three defaults a profile's layout is spread across. Moved and cleared together: a pad from
+/// the LAN connection merged with the hidden list from the Tailscale one would be neither.
+static NSArray<KeyDefaultsKeyBuilder> *KeyProfileDefaultsKeys(void) {
+    return @[
+        ^(NSString *p) { return KeyPadDefaultsKey(p); },
+        ^(NSString *p) { return KeyHiddenDefaultsKey(p); },
+        ^(NSString *p) { return KeyCustomDefaultsKey(p); },
+    ];
+}
+
++ (void)adoptLegacyProfiles:(NSArray<NSString *> *)legacyProfiles
+                   hostKeys:(NSArray<NSString *> *)legacyHostKeys
+                intoProfile:(NSString *)profile
+                    hostKey:(NSString *)hostKey {
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    NSArray<KeyDefaultsKeyBuilder> *builders = KeyProfileDefaultsKeys();
+
+    BOOL alreadyStored = NO;
+    for (KeyDefaultsKeyBuilder build in builders) {
+        if ([defaults objectForKey:build(profile)] != nil) {
+            alreadyStored = YES;
+            break;
+        }
+    }
+
+    for (NSString *legacy in legacyProfiles) {
+        if (legacy.length == 0 || [legacy isEqualToString:profile]) {
+            continue;
+        }
+        BOOL adopted = NO;
+        for (KeyDefaultsKeyBuilder build in builders) {
+            id stored = [defaults objectForKey:build(legacy)];
+            if (stored == nil) {
+                continue;
+            }
+            if (!alreadyStored) {
+                [defaults setObject:stored forKey:build(profile)];
+                adopted = YES;
+            }
+            // Cleared whether it was adopted or passed over. Leaving it would mean a key that
+            // nothing can reach, holding a layout that silently stops matching the catalogue as
+            // the catalogue moves on.
+            [defaults removeObjectForKey:build(legacy)];
+        }
+        if (adopted) {
+            alreadyStored = YES;
+            Log(LOG_I, @"Key bar: adopted the layout saved under %@ into %@", legacy, profile);
+        }
+    }
+
+    BOOL kindStored = [defaults objectForKey:KeyMacroHostDefaultsKey(hostKey)] != nil;
+    for (NSString *legacy in legacyHostKeys) {
+        if (legacy.length == 0 || [legacy isEqualToString:hostKey]) {
+            continue;
+        }
+        NSNumber *kind = [defaults objectForKey:KeyMacroHostDefaultsKey(legacy)];
+        if (kind == nil) {
+            continue;
+        }
+        if (!kindStored) {
+            [defaults setObject:kind forKey:KeyMacroHostDefaultsKey(hostKey)];
+            kindStored = YES;
+        }
+        [defaults removeObjectForKey:KeyMacroHostDefaultsKey(legacy)];
+    }
+}
+
 + (KeyMacroHost)hostKindForKey:(NSString *)key {
     NSString *defaultsKey = KeyMacroHostDefaultsKey(key);
     NSNumber *stored = [[NSUserDefaults standardUserDefaults] objectForKey:defaultsKey];

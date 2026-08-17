@@ -261,11 +261,19 @@ typedef NS_ENUM(NSInteger, KeyBarLayout) {
 }
 
 - (instancetype)initWithFrame:(CGRect)frame {
-    return [self initWithFrame:frame hostKey:nil appName:nil content:KeyBarContentBoth];
+    return [self initWithFrame:frame hostKey:nil legacyHostKeys:nil appName:nil content:KeyBarContentBoth];
+}
+
+/// The key everything the user customises is stored under.
+static NSString *KeyBarProfileKey(NSString *hostKey, NSString *appName) {
+    return appName.length > 0
+        ? [NSString stringWithFormat:@"%@/%@", hostKey ?: @"", appName]
+        : [hostKey copy];
 }
 
 - (instancetype)initWithFrame:(CGRect)frame
                       hostKey:(NSString *)hostKey
+               legacyHostKeys:(NSArray<NSString *> *)legacyHostKeys
                       appName:(NSString *)appName
                       content:(KeyBarContent)content {
     self = [super initWithFrame:frame];
@@ -274,9 +282,16 @@ typedef NS_ENUM(NSInteger, KeyBarLayout) {
     }
 
     _hostKey = [hostKey copy];
-    _profileKey = appName.length > 0
-        ? [NSString stringWithFormat:@"%@/%@", hostKey ?: @"", appName]
-        : [hostKey copy];
+    _profileKey = KeyBarProfileKey(hostKey, appName);
+    NSMutableArray<NSString *> *legacyProfiles = [NSMutableArray array];
+    for (NSString *legacy in legacyHostKeys) {
+        [legacyProfiles addObject:KeyBarProfileKey(legacy, appName)];
+    }
+    [KeyMacros adoptLegacyProfiles:legacyProfiles
+                          hostKeys:legacyHostKeys
+                       intoProfile:_profileKey
+                           hostKey:_hostKey];
+    Log(LOG_I, @"Key bar profile: %@", _profileKey);
     _axis = UILayoutConstraintAxisHorizontal;
     _layout = KeyBarLayoutLine;
     _content = content;
@@ -1523,8 +1538,26 @@ typedef NS_ENUM(NSInteger, KeyBarLayout) {
                                      identifier:nil
                                         handler:^(__kindof UIAction *sender) {}];
     build.attributes = UIMenuElementAttributesDisabled;
+
+    // Everything the user customises is stored under this. Shown so that "my keys are gone" can be
+    // told apart from "my keys are filed somewhere else" without a debugger — which is how the
+    // address-keyed version of this was caught. Abbreviated because the host half is a uuid and
+    // only its changing matters, not its value.
+    NSString *shownProfile = _profileKey ?: @"(none)";
+    if (shownProfile.length > 8) {
+        NSRange split = [shownProfile rangeOfString:@"/"];
+        NSUInteger head = split.location != NSNotFound ? MIN((NSUInteger)8, split.location) : 8;
+        shownProfile = [NSString stringWithFormat:@"%@…%@", [shownProfile substringToIndex:head],
+                        split.location != NSNotFound ? [shownProfile substringFromIndex:split.location] : @""];
+    }
+    UIAction *profile = [UIAction actionWithTitle:[@"profile " stringByAppendingString:shownProfile]
+                                            image:nil
+                                       identifier:nil
+                                          handler:^(__kindof UIAction *sender) {}];
+    profile.attributes = UIMenuElementAttributesDisabled;
+
     [sections addObject:[UIMenu menuWithTitle:@"" image:nil identifier:nil
-                                      options:UIMenuOptionsDisplayInline children:@[build]]];
+                                      options:UIMenuOptionsDisplayInline children:@[build, profile]]];
 
     return [UIMenu menuWithTitle:@"" children:sections];
 }

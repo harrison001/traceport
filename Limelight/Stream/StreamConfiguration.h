@@ -9,6 +9,14 @@
 @interface StreamConfiguration : NSObject
 
 @property NSString* host;
+/// The host's own identifier, which does not change when it is reached at a different address.
+/// `host` above is whichever address answered discovery first, so it is no use for remembering
+/// anything about the machine.
+@property NSString* hostUuid;
+/// Every address form this host is known by, the one in use first. One machine answers as a LAN
+/// address, a Tailscale address, a MagicDNS name and an IPv6 literal, and anything that filed
+/// something under one of them needs to find it again under the others.
+@property NSArray<NSString *>* hostAddresses;
 @property unsigned short httpsPort;
 @property NSString* appVersion;
 @property NSString* gfeVersion;

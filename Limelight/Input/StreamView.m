@@ -42,10 +42,16 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     CGFloat pictureLift;
     BOOL caretLogged;
     BOOL systemKeyboardVisible;
-    /// Identifies the host, so its operating system is remembered per machine.
-    NSString* hostKey;
+    /// The address the host answered discovery on. Only the caret has any use for it: it is not
+    /// an identity, because the same machine answers on a different address over Tailscale.
+    NSString* hostAddress;
+    /// Every address form this host is known by, so layouts filed under any of them are found.
+    NSArray<NSString *>* hostAddresses;
+    /// Identifies the host itself, so its layout and operating system are remembered per machine
+    /// however it was reached.
+    NSString* hostIdentity;
     /// What the caret is asked for over: the host's TLS port and the certificate it was paired
-    /// with. The port carried on hostKey is the streaming one and is no use here.
+    /// with. The port carried on hostAddress is the streaming one and is no use here.
     unsigned short hostHttpsPort;
     NSData* hostServerCert;
     /// The app launched on the host, which gives each app its own bar customisations.
@@ -80,7 +86,11 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     self->interactionDelegate = interactionDelegate;
     self->streamAspectRatio = (float)streamConfig.width / (float)streamConfig.height;
 #if !TARGET_OS_TV
-    self->hostKey = streamConfig.host;
+    self->hostAddress = streamConfig.host;
+    self->hostAddresses = streamConfig.hostAddresses ?: @[];
+    // Falls back to the address rather than to nothing, so a host without a stored identity keeps
+    // its own drawer instead of sharing one with every other host.
+    self->hostIdentity = streamConfig.hostUuid.length > 0 ? streamConfig.hostUuid : streamConfig.host;
     self->hostHttpsPort = streamConfig.httpsPort;
     self->hostServerCert = streamConfig.serverCert;
     self->streamedAppName = streamConfig.appName;
@@ -435,7 +445,8 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
 - (void)createKeyBars {
     if ([self keyBarMarginWidth] > 0) {
         macroPad = [[KeyBarView alloc] initWithFrame:self.bounds
-                                             hostKey:hostKey
+                                             hostKey:hostIdentity
+                                      legacyHostKeys:hostAddresses
                                              appName:streamedAppName
                                              content:KeyBarContentPad];
         macroPad.delegate = self;
@@ -448,7 +459,8 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
 /// because otherwise the macros would have nowhere to live.
 - (void)createKeyboardBar {
     keyBar = [[KeyBarView alloc] initWithFrame:CGRectMake(0, 0, self.bounds.size.width, 44)
-                                       hostKey:hostKey
+                                       hostKey:hostIdentity
+                                legacyHostKeys:hostAddresses
                                        appName:streamedAppName
                                        content:macroPad != nil ? KeyBarContentKeyboard
                                                                : KeyBarContentBoth];
@@ -524,7 +536,7 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     }
 
     caretLogged = NO;
-    caretTracker = [[CaretTracker alloc] initWithHost:hostKey
+    caretTracker = [[CaretTracker alloc] initWithHost:hostAddress
                                             httpsPort:hostHttpsPort
                                            serverCert:hostServerCert];
     __weak StreamView *weakSelf = self;
