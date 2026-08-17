@@ -1,0 +1,15 @@
+// Signing settings that belong to whoever is building, not to the repository.
+//
+// Copy this to Local.xcconfig, which is not tracked, and put your own Apple Developer
+// team identifier in it. Xcode reads it as the project's base configuration, so building
+// from the IDE works without anyone editing — and re-committing — project.pbxproj.
+//
+//   cp Local.xcconfig.example Local.xcconfig
+//
+// Find the identifier under Xcode > Settings > Accounts, or:
+//
+//   xcrun security find-identity -v -p codesigning
+//
+// Without it the build stops at signing and says no team is set, which is the right
+// failure: it names what to do rather than trying to sign as somebody else.
+LOCAL_DEVELOPMENT_TEAM =
