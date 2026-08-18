@@ -645,14 +645,16 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
         return MAX(letterbox, wanted);
     }
 
-    // No letterbox at all, which is what asking for the screen's own resolution gets you. The keys
-    // go over the picture rather than not existing: they are translucent and they sit in the two
-    // strips furthest from the middle, which is where this app's own on-screen controls already
-    // float. Losing them entirely is the worse trade.
+    // No letterbox at all: the picture reaches both edges, so columns there would sit on top of
+    // it. They did for a while, translucent, on the argument that having the keys somewhere beat
+    // not having them. That argument was wrong. On an iPad the stream fills the screen and the
+    // columns landed across the terminal being worked in — and the keys were never lost anyway,
+    // because the line above the keyboard carries the whole catalogue when there is no pad
+    // (createKeyboardBar asks for KeyBarContentBoth in exactly that case).
     //
-    // Landscape only. Down the sides of a portrait screen the same strips are a third of the
-    // width and there is nowhere for them to be out of the way.
-    return width > height ? wanted : 0;
+    // So: columns only where there is real black to put them in. Everywhere else the keys live
+    // in the line, which covers nothing.
+    return 0;
 }
 
 /// Pins the keyboard line along the bottom. Only reached where there is no pad, since with a
