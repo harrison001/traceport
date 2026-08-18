@@ -14,9 +14,6 @@
 /// from the outside which one a phone is executing. Twice now a change has been reported as
 /// missing when the question was really "is this even the new build". One line in the ⋯ menu
 /// answers it in a second.
-#ifndef KEYBAR_BUILD_ID
-#define KEYBAR_BUILD_ID "dev"
-#endif
 
 /// What a modifier is currently doing.
 typedef NS_ENUM(NSInteger, KeyBarModifierState) {
@@ -1533,31 +1530,21 @@ static NSString *KeyBarProfileKey(NSString *hostKey, NSString *appName) {
 
     // Installing an app does not replace the copy already running, and nothing from the outside
     // says which one a phone is executing. One line here answers it in a second.
-    UIAction *build = [UIAction actionWithTitle:@"build " @KEYBAR_BUILD_ID
-                                          image:nil
-                                     identifier:nil
-                                        handler:^(__kindof UIAction *sender) {}];
-    build.attributes = UIMenuElementAttributesDisabled;
-
-    // Everything the user customises is stored under this. Shown so that "my keys are gone" can be
-    // told apart from "my keys are filed somewhere else" without a debugger — which is how the
-    // address-keyed version of this was caught. Abbreviated because the host half is a uuid and
-    // only its changing matters, not its value.
-    NSString *shownProfile = _profileKey ?: @"(none)";
-    if (shownProfile.length > 8) {
-        NSRange split = [shownProfile rangeOfString:@"/"];
-        NSUInteger head = split.location != NSNotFound ? MIN((NSUInteger)8, split.location) : 8;
-        shownProfile = [NSString stringWithFormat:@"%@…%@", [shownProfile substringToIndex:head],
-                        split.location != NSNotFound ? [shownProfile substringFromIndex:split.location] : @""];
-    }
-    UIAction *profile = [UIAction actionWithTitle:[@"profile " stringByAppendingString:shownProfile]
+    // The version, so that a bug report can say which one. Was a hand-set build tag and the
+    // storage key beside it while the key bar's profile handling was being sorted out; both were
+    // for reading over someone's shoulder during that, and neither belongs in a shipped menu.
+    NSDictionary *info = [NSBundle mainBundle].infoDictionary;
+    NSString *shown = [NSString stringWithFormat:@"%@ (%@)",
+                       info[@"CFBundleShortVersionString"] ?: @"?",
+                       info[@"CFBundleVersion"] ?: @"?"];
+    UIAction *version = [UIAction actionWithTitle:shown
                                             image:nil
                                        identifier:nil
                                           handler:^(__kindof UIAction *sender) {}];
-    profile.attributes = UIMenuElementAttributesDisabled;
+    version.attributes = UIMenuElementAttributesDisabled;
 
     [sections addObject:[UIMenu menuWithTitle:@"" image:nil identifier:nil
-                                      options:UIMenuOptionsDisplayInline children:@[build, profile]]];
+                                      options:UIMenuOptionsDisplayInline children:@[version]]];
 
     return [UIMenu menuWithTitle:@"" children:sections];
 }
