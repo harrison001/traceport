@@ -6,6 +6,7 @@
 #import "KeyBarView.h"
 #import "KeyMacros.h"
 #import "KeyboardSupport.h"
+#import "Connection.h"
 #include <Limelight.h>
 
 /// Which commit this binary was built from, injected by the build command.
@@ -1481,10 +1482,39 @@ static NSString *KeyBarProfileKey(NSString *hostKey, NSString *appName) {
                         children:actions];
 }
 
+/// Rebuilds the ⋯ menu so it shows current state. The button keeps whatever menu it was given,
+/// so anything in there that can change while the bar is alive has to say so.
+- (void)refreshSettingsMenu {
+    if (_settingsButton != nil) {
+        _settingsButton.menu = [self settingsMenu];
+    }
+}
+
 /// The ⋯ button: everything that is a setting rather than a key.
 - (UIMenu *)settingsMenu {
     __weak KeyBarView *weakSelf = self;
     NSMutableArray<UIMenuElement *> *sections = [NSMutableArray array];
+
+    // Sound, first, because it is the one thing here anyone reaches for mid-session — a stream
+    // that starts talking in a quiet room is a thing you want stopped now, not after a hunt.
+    //
+    // It lives in the menu rather than as a fourth control because the row is three keys wide on
+    // a phone's letterbox and muting is occasional; the menu also carries the on/off state as a
+    // checkmark for free, which a button would have to draw for itself.
+    BOOL muted = [Connection isAudioMuted];
+    UIAction *sound =
+        [UIAction actionWithTitle:@"Sound"
+                            image:[UIImage systemImageNamed:muted ? @"speaker.slash" : @"speaker.wave.2"]
+                       identifier:nil
+                          handler:^(__kindof UIAction *sender) {
+        [Connection setAudioMuted:![Connection isAudioMuted]];
+        // The button holds one menu built at construction, so the checkmark and icon would show
+        // the state this tap just left behind. Rebuild it now.
+        [weakSelf refreshSettingsMenu];
+    }];
+    sound.state = muted ? UIMenuElementStateOff : UIMenuElementStateOn;
+    [sections addObject:[UIMenu menuWithTitle:@"" image:nil identifier:nil
+                                      options:UIMenuOptionsDisplayInline children:@[sound]]];
 
     if (_content != KeyBarContentKeyboard) {
         [sections addObject:[self catalogueMenu]];

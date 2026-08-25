@@ -16,6 +16,7 @@
 
 #include "Limelight.h"
 #include "opus_multistream.h"
+#include <stdatomic.h>
 
 @implementation Connection {
     SERVER_INFORMATION _serverInfo;
@@ -42,6 +43,13 @@ static SDL_AudioDeviceID audioDevice;
 static OPUS_MULTISTREAM_CONFIGURATION audioConfig;
 static void* audioBuffer;
 static int audioFrameSize;
+
+/// Whether to drop the stream's sound on the floor.
+///
+/// Written from the main thread when someone taps the control, read on the audio thread for every
+/// packet, so it is atomic. Nothing else about it needs ordering: a packet either side of the tap
+/// may go whichever way, and half a frame of sound is not worth a lock on the hot path.
+static atomic_bool audioMuted;
 
 static VideoDecoderRenderer* renderer;
 
@@ -191,6 +199,11 @@ int ArInit(int audioConfiguration, POPUS_MULTISTREAM_CONFIGURATION opusConfig, v
 {
     int err;
     SDL_AudioSpec want, have;
+
+    // Carry the choice across sessions. Someone who muted because they are in an office is still
+    // in that office the next time they connect, and having to find the control again every time
+    // is how a setting earns its reputation for not working.
+    atomic_store(&audioMuted, [[NSUserDefaults standardUserDefaults] boolForKey:@"audioMuted"]);
     
     if (SDL_InitSubSystem(SDL_INIT_AUDIO) < 0) {
         Log(LOG_E, @"Failed to initialize audio subsystem: %s\n", SDL_GetError());
@@ -240,6 +253,24 @@ int ArInit(int audioConfiguration, POPUS_MULTISTREAM_CONFIGURATION opusConfig, v
     return 0;
 }
 
+/// Whether the stream's sound is being dropped.
++ (BOOL)isAudioMuted {
+    return atomic_load(&audioMuted);
+}
+
+/// Turn the stream's sound off or on, mid-session or before one starts.
++ (void)setAudioMuted:(BOOL)muted {
+    atomic_store(&audioMuted, muted);
+    [[NSUserDefaults standardUserDefaults] setBool:muted forKey:@"audioMuted"];
+
+    // Throw away what is already queued. Without this, unmuting starts by playing whatever was
+    // buffered at the moment of the mute — a stale burst from seconds ago, arriving as a jolt
+    // exactly when the user asked for sound back.
+    if (muted && audioDevice != 0) {
+        SDL_ClearQueuedAudio(audioDevice);
+    }
+}
+
 void ArCleanup(void)
 {
     if (opusDecoder != NULL) {
@@ -263,7 +294,15 @@ void ArCleanup(void)
 void ArDecodeAndPlaySample(char* sampleData, int sampleLength)
 {
     int decodeLen;
-    
+
+    // Muted: drop it here, before the decode. The host keeps sending — there is no way to ask it
+    // to stop that does not risk the session (Sunshine's audio thread waits on one ping at setup
+    // and takes the whole session down if it never comes) — but nothing past this point costs
+    // anything, and Opus is the expensive part.
+    if (atomic_load(&audioMuted)) {
+        return;
+    }
+
     // Don't queue if there's already more than 30 ms of audio data waiting
     // in Moonlight's audio queue.
     if (LiGetPendingAudioDuration() > 30) {
