@@ -51,6 +51,8 @@ static int audioFrameSize;
 /// may go whichever way, and half a frame of sound is not worth a lock on the hot path.
 static atomic_bool audioMuted;
 
+NSString * const kAudioMuteChangedNotification = @"AudioMuteChanged";
+
 static VideoDecoderRenderer* renderer;
 
 int DrDecoderSetup(int videoFormat, int width, int height, int redrawRate, void* context, int drFlags)
@@ -269,6 +271,9 @@ int ArInit(int audioConfiguration, POPUS_MULTISTREAM_CONFIGURATION opusConfig, v
     if (muted && audioDevice != 0) {
         SDL_ClearQueuedAudio(audioDevice);
     }
+
+    [[NSNotificationCenter defaultCenter] postNotificationName:kAudioMuteChangedNotification
+                                                        object:nil];
 }
 
 void ArCleanup(void)

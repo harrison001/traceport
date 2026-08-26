@@ -297,6 +297,13 @@ static NSString *KeyBarProfileKey(NSString *hostKey, NSString *appName) {
     _modifierButtons = [NSMutableArray array];
     _groups = [self currentGroups];
 
+    // The mute state is shared, the menus showing it are not. Listen rather than be told, so a
+    // bar that appears later is right from its first tap and no one has to remember to wire it.
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(refreshSettingsMenu)
+                                                 name:kAudioMuteChangedNotification
+                                               object:nil];
+
     self.backgroundColor = [UIColor clearColor];
 
     _primary = [[KeyBarPanel alloc] initWithFrame:CGRectZero];
@@ -1485,6 +1492,13 @@ static NSString *KeyBarProfileKey(NSString *hostKey, NSString *appName) {
 /// Rebuilds the ⋯ menu so it shows current state. The button keeps whatever menu it was given,
 /// so anything in there that can change while the bar is alive has to say so.
 - (void)refreshSettingsMenu {
+    // Reached both directly and as a notification handler, and a notification arrives on whatever
+    // thread posted it. Touching a button from off the main thread is the kind of bug that shows
+    // up once a fortnight on someone else's device.
+    if (!NSThread.isMainThread) {
+        dispatch_async(dispatch_get_main_queue(), ^{ [self refreshSettingsMenu]; });
+        return;
+    }
     if (_settingsButton != nil) {
         _settingsButton.menu = [self settingsMenu];
     }
@@ -1507,10 +1521,9 @@ static NSString *KeyBarProfileKey(NSString *hostKey, NSString *appName) {
                             image:[UIImage systemImageNamed:muted ? @"speaker.slash" : @"speaker.wave.2"]
                        identifier:nil
                           handler:^(__kindof UIAction *sender) {
+        // No rebuild here: setAudioMuted broadcasts, and every bar — this one included — rebuilds
+        // from that. One path, so the bar you tapped and the bar you didn't cannot disagree.
         [Connection setAudioMuted:![Connection isAudioMuted]];
-        // The button holds one menu built at construction, so the checkmark and icon would show
-        // the state this tap just left behind. Rebuild it now.
-        [weakSelf refreshSettingsMenu];
     }];
     sound.state = muted ? UIMenuElementStateOff : UIMenuElementStateOn;
     [sections addObject:[UIMenu menuWithTitle:@"" image:nil identifier:nil
