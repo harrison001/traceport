@@ -2,6 +2,8 @@
 
 A Moonlight fork for people who have to *type* on the far end.
 
+[**Free on the App Store**](https://apps.apple.com/app/id6802870894) · iPhone and iPad, iOS 15+
+
 Moonlight streams your desktop to a phone very well. What it does not do well is let you work
 once you get there. The on-screen keyboard has no modifiers, no arrows, no function keys, and it
 covers the field you are typing into. TracePort is the same client with that part rebuilt.
@@ -44,8 +46,8 @@ dictation — is sent as text rather than as keystrokes it cannot spell.
 
 ## Free
 
-Free, and it will stay free wherever it is distributed from. If a build of it ever appears
-somewhere that charges — including an app store — it is not one of mine.
+Free on the App Store, and free wherever else it is distributed from. If a build of it ever
+appears somewhere that charges, it is not one of mine.
 
 That is a promise about this fork, not a summary of the licence. The GPL has never required
 anyone to give software away, and it does not require me to. Nothing here is worth putting a
@@ -54,7 +56,10 @@ is mine.
 
 ## Install
 
-There are no binaries. Build it yourself:
+**[TracePort on the App Store](https://apps.apple.com/app/id6802870894)** — iPhone and iPad,
+iOS 15 and later.
+
+Or build it yourself:
 
 ```sh
 git clone https://github.com/harrison001/traceport.git
@@ -106,9 +111,17 @@ something smaller.
 Any Sunshine or GeForce Experience host works for everything except caret following.
 
 Caret following needs the host to answer `GET /caret` with the focused application's insertion
-point. That is [proposed upstream](https://github.com/LizardByte/Sunshine) and not in a release
-yet, so until it lands you need a Sunshine built from that branch. Without it the client simply
-never moves the picture; nothing else changes.
+point. That is not in a released Sunshine, so until it lands you need a host built from
+[this branch](https://github.com/harrison001/Sunshine/tree/macos-work). Without it the client
+simply never moves the picture; nothing else changes.
+
+That branch is upstream Sunshine with a handful of macOS things on top, rebased onto it
+regularly. Besides `/caret` it carries text input that survives the virtual keyboard driver
+(so Chinese, Japanese, Korean and emoji arrive as text), the pointer following whichever
+display capture moved to, and fixes for three ways the macOS host could hang or kill itself —
+a display that sleeps mid-session, a display that sleeps and does not come back, and the
+session teardown blocking on a tray repaint. The display-sleep one is
+[open upstream](https://github.com/LizardByte/Sunshine/pull/5510); the rest are on the branch.
 
 The caret is read through Accessibility, which only macOS exposes. On other hosts the answer falls
 back to the pointer.
