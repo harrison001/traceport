@@ -703,6 +703,16 @@
     return YES;
 }
 
+// Hold the phone the way the picture is shaped. The host list turns the
+// device before pushing us (see beginStreamSegue), so the stream view is
+// laid out once in the right shape and never rotates underneath the video.
+- (UIInterfaceOrientationMask)supportedInterfaceOrientations {
+    if (self.streamConfig.height > self.streamConfig.width) {
+        return UIInterfaceOrientationMaskPortrait;
+    }
+    return UIInterfaceOrientationMaskLandscape;
+}
+
 - (BOOL)prefersPointerLocked {
     // Pointer lock breaks the UIKit mouse APIs, which is a problem because
     // GCMouse is horribly broken on iOS 14.0 for certain mice. Only lock

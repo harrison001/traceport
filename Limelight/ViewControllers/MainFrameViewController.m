@@ -37,6 +37,64 @@
 
 #include <Limelight.h>
 
+// Per-host stream resolution. The global setting is one shape for every host,
+// but a host whose desktop is a phone screen wants a tall stream: asking it for
+// 1920x1080 pillarboxes the phone into a sliver in the middle of a wide frame.
+// Kept by host UUID in the user defaults. "src" leaves room for a size the host
+// reports about itself later; a choice made here should keep winning over that.
+static NSString* const kHostStreamResolutionKey = @"TracePortHostStreamResolution";
+
+static CGSize HostStreamResolution(NSString* uuid) {
+    if (uuid == nil) {
+        return CGSizeZero;
+    }
+    NSDictionary* entry = [[NSUserDefaults standardUserDefaults] dictionaryForKey:kHostStreamResolutionKey][uuid];
+    if (![entry isKindOfClass:[NSDictionary class]]) {
+        return CGSizeZero;
+    }
+    return CGSizeMake([entry[@"w"] intValue], [entry[@"h"] intValue]);
+}
+
+static void SetHostStreamResolution(NSString* uuid, CGSize size) {
+    if (uuid == nil) {
+        return;
+    }
+    NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
+    NSMutableDictionary* all = [[defaults dictionaryForKey:kHostStreamResolutionKey] mutableCopy] ?: [NSMutableDictionary dictionary];
+    if (size.width > 0 && size.height > 0) {
+        all[uuid] = @{ @"w": @((int)size.width), @"h": @((int)size.height), @"src": @"manual" };
+    }
+    else {
+        [all removeObjectForKey:uuid];
+    }
+    [defaults setObject:all forKey:kHostStreamResolutionKey];
+}
+
+#if !TARGET_OS_TV
+// Turn the device to match what the top controller now allows. iOS 16 wants an
+// explicit geometry request; older systems still take the orientation nudge.
+static void RequestInterfaceOrientation(UIViewController* vc, BOOL portrait) {
+    if (@available(iOS 16.0, *)) {
+        [vc setNeedsUpdateOfSupportedInterfaceOrientations];
+        UIWindowScene* scene = vc.view.window.windowScene;
+        if (scene == nil) {
+            return;
+        }
+        UIWindowSceneGeometryPreferencesIOS* prefs =
+            [[UIWindowSceneGeometryPreferencesIOS alloc] initWithInterfaceOrientations:
+                (portrait ? UIInterfaceOrientationMaskPortrait : UIInterfaceOrientationMaskLandscape)];
+        [scene requestGeometryUpdateWithPreferences:prefs errorHandler:^(NSError* error) {
+            Log(LOG_W, @"Orientation request refused: %@", error);
+        }];
+    }
+    else {
+        [[UIDevice currentDevice] setValue:@(portrait ? UIInterfaceOrientationPortrait : UIInterfaceOrientationLandscapeRight)
+                                    forKey:@"orientation"];
+        [UIViewController attemptRotationToDeviceOrientation];
+    }
+}
+#endif
+
 @implementation MainFrameViewController {
     NSOperationQueue* _opQueue;
     TemporaryHost* _selectedHost;
@@ -55,6 +113,9 @@
     bool _background;
 #if TARGET_OS_TV
     UITapGestureRecognizer* _menuRecognizer;
+#else
+    BOOL _allowPortraitForStream;   // host list turns upright just long enough to push a tall stream
+    BOOL _streamSeguePending;       // push once that rotation lands
 #endif
 }
 static NSMutableSet* hostList;
@@ -530,6 +591,9 @@ static NSMutableSet* hostList;
             });
         }];
     }]];
+    [longClickAlert addAction:[UIAlertAction actionWithTitle:@"Stream Resolution for This Host" style:UIAlertActionStyleDefault handler:^(UIAlertAction* action) {
+        [self promptHostResolution:host view:view];
+    }]];
 #if !TARGET_OS_TV
     if (host.state != StateOnline) {
         [longClickAlert addAction:[UIAlertAction actionWithTitle:@"NVIDIA GameStream End-of-Service" style:UIAlertActionStyleDefault handler:^(UIAlertAction* action){
@@ -544,6 +608,7 @@ static NSMutableSet* hostList;
         [self->_discMan removeHostFromDiscovery:host];
         DataManager* dataMan = [[DataManager alloc] init];
         [dataMan removeHost:host];
+        SetHostStreamResolution(host.uuid, CGSizeZero);
         @synchronized(hostList) {
             [hostList removeObject:host];
             [self updateAllHosts:[hostList allObjects]];
@@ -557,6 +622,87 @@ static NSMutableSet* hostList;
     
     longClickAlert.popoverPresentationController.sourceRect = CGRectMake(view.bounds.size.width / 2.0, view.bounds.size.height / 2.0, 1.0, 1.0); // center of the view
     [[self activeViewController] presentViewController:longClickAlert animated:YES completion:nil];
+}
+
+// Choose a stream size for this host alone. "Match this device" asks for the
+// device's own pixels, so a host whose desktop has the same shape as this
+// screen (a phone mirrored onto the host, say) fills it edge to edge, 1:1.
+- (void)promptHostResolution:(TemporaryHost *)host view:(UIView *)view {
+    CGSize current = HostStreamResolution(host.uuid);
+    TemporarySettings* settings = [[[DataManager alloc] init] getSettings];
+    NSString* message;
+    if (current.width > 0) {
+        message = [NSString stringWithFormat:@"%@ streams at %dx%d.", host.name, (int)current.width, (int)current.height];
+    }
+    else {
+        message = [NSString stringWithFormat:@"%@ uses the global setting (%@x%@).", host.name, settings.width, settings.height];
+    }
+
+    // nativeBounds is in portrait-up pixels however the device is held
+    CGSize native = [UIScreen mainScreen].nativeBounds.size;
+    int shortSide = (int)MIN(native.width, native.height);
+    int longSide = (int)MAX(native.width, native.height);
+
+    UIAlertController* sheet = [UIAlertController alertControllerWithTitle:@"Stream Resolution" message:message preferredStyle:UIAlertControllerStyleActionSheet];
+    [sheet addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"Match This Device, Portrait (%dx%d)", shortSide, longSide] style:UIAlertActionStyleDefault handler:^(UIAlertAction* action) {
+        SetHostStreamResolution(host.uuid, CGSizeMake(shortSide, longSide));
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"Match This Device, Landscape (%dx%d)", longSide, shortSide] style:UIAlertActionStyleDefault handler:^(UIAlertAction* action) {
+        SetHostStreamResolution(host.uuid, CGSizeMake(longSide, shortSide));
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Custom..." style:UIAlertActionStyleDefault handler:^(UIAlertAction* action) {
+        [self promptCustomHostResolution:host current:current];
+    }]];
+    if (current.width > 0) {
+        [sheet addAction:[UIAlertAction actionWithTitle:@"Use Global Setting" style:UIAlertActionStyleDestructive handler:^(UIAlertAction* action) {
+            SetHostStreamResolution(host.uuid, CGSizeZero);
+        }]];
+    }
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+
+    sheet.popoverPresentationController.sourceView = view;
+    sheet.popoverPresentationController.sourceRect = CGRectMake(view.bounds.size.width / 2.0, view.bounds.size.height / 2.0, 1.0, 1.0);
+    [[self activeViewController] presentViewController:sheet animated:YES completion:nil];
+}
+
+- (void)promptCustomHostResolution:(TemporaryHost *)host current:(CGSize)current {
+    UIAlertController* alert = [UIAlertController alertControllerWithTitle:@"Custom Resolution"
+                                                                   message:[NSString stringWithFormat:@"For %@ only. Taller than wide streams upright.", host.name]
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField* textField) {
+        textField.placeholder = @"Video Width";
+        textField.keyboardType = UIKeyboardTypeNumberPad;
+        if (current.width > 0) {
+            textField.text = [NSString stringWithFormat:@"%d", (int)current.width];
+        }
+    }];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField* textField) {
+        textField.placeholder = @"Video Height";
+        textField.keyboardType = UIKeyboardTypeNumberPad;
+        if (current.height > 0) {
+            textField.text = [NSString stringWithFormat:@"%d", (int)current.height];
+        }
+    }];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:^(UIAlertAction* action) {
+        long width = [alert.textFields[0].text integerValue];
+        long height = [alert.textFields[1].text integerValue];
+        if (width <= 0 || height <= 0) {
+            return;
+        }
+
+        // Same limits as the global custom resolution
+        int maxResolutionDimension = 4096;
+        if (@available(iOS 11.0, tvOS 11.0, *)) {
+            if (VTIsHardwareDecodeSupported(kCMVideoCodecType_HEVC)) {
+                maxResolutionDimension = 8192;
+            }
+        }
+        width = MAX(256, MIN(width, maxResolutionDimension));
+        height = MAX(256, MIN(height, maxResolutionDimension));
+        SetHostStreamResolution(host.uuid, CGSizeMake(width, height));
+    }]];
+    [[self activeViewController] presentViewController:alert animated:YES completion:nil];
 }
 
 - (void) addHostClicked {
@@ -633,6 +779,12 @@ static NSMutableSet* hostList;
     
     _streamConfig.height = [streamSettings.height intValue];
     _streamConfig.width = [streamSettings.width intValue];
+    CGSize hostResolution = HostStreamResolution(app.host.uuid);
+    if (hostResolution.width > 0 && hostResolution.height > 0) {
+        _streamConfig.width = (int)hostResolution.width;
+        _streamConfig.height = (int)hostResolution.height;
+        Log(LOG_I, @"Using %@'s own stream resolution: %dx%d", app.host.name, _streamConfig.width, _streamConfig.height);
+    }
 #if TARGET_OS_TV
     // Don't allow streaming 4K on the Apple TV HD
     struct utsname systemInfo;
@@ -758,7 +910,7 @@ static NSMutableSet* hostList;
             [self prepareToStreamApp:app];
         }
 
-        [self performSegueWithIdentifier:@"createStreamFrame" sender:nil];
+        [self beginStreamSegue];
     }]];
     
     if (currentApp != nil) {
@@ -812,7 +964,7 @@ static NSMutableSet* hostList;
                                                         if (![app.id isEqualToString:currentApp.id]) {
                                                             [self prepareToStreamApp:app];
                                                             [self hideLoadingFrame: ^{
-                                                                [self performSegueWithIdentifier:@"createStreamFrame" sender:nil];
+                                                                [self beginStreamSegue];
                                                             }];
                                                         }
                                                         else {
@@ -867,7 +1019,7 @@ static NSMutableSet* hostList;
         [self appLongClicked:app view:view];
     } else {
         [self prepareToStreamApp:app];
-        [self performSegueWithIdentifier:@"createStreamFrame" sender:nil];
+        [self beginStreamSegue];
     }
 }
 
@@ -1108,8 +1260,14 @@ static NSMutableSet* hostList;
     
 #if !TARGET_OS_TV
     [[self revealViewController] setPrimaryViewController:self];
+
+    // Back from a tall stream: give portrait up and turn the list wide again.
+    if (_allowPortraitForStream || self.view.bounds.size.height > self.view.bounds.size.width) {
+        _allowPortraitForStream = NO;
+        RequestInterfaceOrientation(self, NO);
+    }
 #endif
-    
+
     [self.navigationController setNavigationBarHidden:NO animated:YES];
     
     // Hide 1px border line
@@ -1419,7 +1577,51 @@ static NSMutableSet* hostList;
 - (BOOL)shouldAutorotate {
     return YES;
 }
+
+- (UIInterfaceOrientationMask)supportedInterfaceOrientations {
+    // The host list stays wide, as it always has. It only turns upright for
+    // the moment it takes to hand a tall stream to the stream view.
+    return _allowPortraitForStream ? UIInterfaceOrientationMaskPortrait : UIInterfaceOrientationMaskLandscape;
+}
+
+- (void)viewWillTransitionToSize:(CGSize)size withTransitionCoordinator:(id<UIViewControllerTransitionCoordinator>)coordinator {
+    [super viewWillTransitionToSize:size withTransitionCoordinator:coordinator];
+    [coordinator animateAlongsideTransition:nil completion:^(id<UIViewControllerTransitionCoordinatorContext> context) {
+        [self performPendingStreamSegue];
+    }];
+}
+
+- (void)performPendingStreamSegue {
+    if (!_streamSeguePending) {
+        return;
+    }
+    _streamSeguePending = NO;
+    [self performSegueWithIdentifier:@"createStreamFrame" sender:nil];
+}
 #endif
+
+// Push the stream view in the shape of the stream. A tall stream turns the
+// device upright first and pushes only once the rotation has landed, so the
+// stream view lays out its video, key bar and touch mapping once, for the
+// bounds it will keep.
+- (void)beginStreamSegue {
+#if !TARGET_OS_TV
+    BOOL wantPortrait = _streamConfig.height > _streamConfig.width;
+    BOOL isPortrait = self.view.bounds.size.height > self.view.bounds.size.width;
+    if (wantPortrait != isPortrait) {
+        _allowPortraitForStream = wantPortrait;
+        _streamSeguePending = YES;
+        RequestInterfaceOrientation(self, wantPortrait);
+        // If the system never rotates (the request refused, say), stream
+        // anyway rather than leave the user looking at the host list.
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [self performPendingStreamSegue];
+        });
+        return;
+    }
+#endif
+    [self performSegueWithIdentifier:@"createStreamFrame" sender:nil];
+}
 
 - (void) disableNavigation {
     self.navigationController.navigationBar.topItem.rightBarButtonItem.enabled = NO;

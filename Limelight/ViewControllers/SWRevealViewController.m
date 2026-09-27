@@ -674,6 +674,24 @@ const int FrontViewPositionNone = 0xff;
 }
 
 
+#pragma mark - Orientation
+
+#if !TARGET_OS_TV
+// UIKit only asks the window's root for its orientations, and neither this
+// container nor the plain UINavigationController in front forwards the
+// question. Hand it to whatever is on top of the front stack, so a stream of
+// a portrait host can turn the phone upright while the host list stays wide.
+- (UIInterfaceOrientationMask)supportedInterfaceOrientations
+{
+    UIViewController *controller = _frontViewController;
+    if ( [controller isKindOfClass:[UINavigationController class]] )
+        controller = ((UINavigationController *)controller).topViewController;
+
+    return controller ? controller.supportedInterfaceOrientations : [super supportedInterfaceOrientations];
+}
+#endif
+
+
 #pragma mark - View lifecycle
 
 - (void)loadView
