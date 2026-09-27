@@ -8,6 +8,54 @@
 
 #import "AppDelegate.h"
 
+// UIKit built against the iOS 27 SDK refuses to launch an app that has not
+// adopted the scene life cycle, so the window moves here. It is still the one
+// window the rest of the app reaches through the app delegate.
+@interface SceneDelegate : UIResponder <UIWindowSceneDelegate>
+@property (strong, nonatomic) UIWindow *window;
+@end
+
+@implementation SceneDelegate
+
+- (void)scene:(UIScene *)scene willConnectToSession:(UISceneSession *)session options:(UISceneConnectionOptions *)connectionOptions {
+    if (![scene isKindOfClass:[UIWindowScene class]]) {
+        return;
+    }
+    AppDelegate* appDelegate = (AppDelegate*)[UIApplication sharedApplication].delegate;
+
+#if TARGET_OS_TV
+    NSString* storyboardName = @"Main";
+#else
+    NSString* storyboardName = UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad ? @"iPad" : @"iPhone";
+
+    // A shortcut that launched the app now arrives here instead of in launchOptions
+    UIApplicationShortcutItem* shortcut = connectionOptions.shortcutItem;
+    if (shortcut != nil) {
+        appDelegate.pcUuidToLoad = (NSString*)[shortcut.userInfo objectForKey:@"UUID"];
+    }
+#endif
+
+    self.window = [[UIWindow alloc] initWithWindowScene:(UIWindowScene*)scene];
+    self.window.rootViewController = [[UIStoryboard storyboardWithName:storyboardName bundle:nil] instantiateInitialViewController];
+    appDelegate.window = self.window;
+    [self.window makeKeyAndVisible];
+}
+
+#if !TARGET_OS_TV
+- (void)windowScene:(UIWindowScene *)windowScene performActionForShortcutItem:(UIApplicationShortcutItem *)shortcutItem completionHandler:(void (^)(BOOL succeeded))completionHandler {
+    AppDelegate* appDelegate = (AppDelegate*)[UIApplication sharedApplication].delegate;
+    appDelegate.pcUuidToLoad = (NSString*)[shortcutItem.userInfo objectForKey:@"UUID"];
+    appDelegate.shortcutCompletionHandler = completionHandler;
+}
+#endif
+
+- (void)sceneDidEnterBackground:(UIScene *)scene {
+    // applicationWillTerminate: is not reliably reached once scenes are in play
+    [(AppDelegate*)[UIApplication sharedApplication].delegate saveContext];
+}
+
+@end
+
 @implementation AppDelegate
 
 @synthesize managedObjectContext = _managedObjectContext;
