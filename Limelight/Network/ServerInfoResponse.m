@@ -99,6 +99,14 @@
     if (serverCodecModeString != nil) {
         host.serverCodecModeSupport = [[serverCodecModeString trim] intValue];
     }
+
+    // Extension of our Sunshine fork: the size of the display being captured
+    NSInteger displayWidth, displayHeight;
+    if ([self getIntTag:@"HostDisplayWidth" value:&displayWidth] &&
+        [self getIntTag:@"HostDisplayHeight" value:&displayHeight]) {
+        host.hostDisplayWidth = (int)displayWidth;
+        host.hostDisplayHeight = (int)displayHeight;
+    }
 }
 
 @end

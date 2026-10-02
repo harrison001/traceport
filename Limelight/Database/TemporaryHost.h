@@ -26,6 +26,12 @@
 @property (atomic, nullable, retain) NSString *mac;
 @property (atomic)                   int serverCodecModeSupport;
 
+// Size of the display the host is capturing, as its serverinfo reports it
+// (an extension of our Sunshine fork). Not stored: every poll re-reads it.
+// 0 = the host hasn't said.
+@property (atomic)                   int hostDisplayWidth;
+@property (atomic)                   int hostDisplayHeight;
+
 NS_ASSUME_NONNULL_BEGIN
 
 @property (atomic, retain) NSString *name;

@@ -70,6 +70,32 @@ static void SetHostStreamResolution(NSString* uuid, CGSize size) {
     [defaults setObject:all forKey:kHostStreamResolutionKey];
 }
 
+// A host that reports a portrait display streams upright at that size, unless
+// a resolution was chosen for it by hand. A landscape host keeps the global
+// setting: matching a Retina desktop pixel for pixel would multiply the bitrate,
+// and a landscape host already fits the global setting's shape.
+static CGSize AutoHostStreamResolution(TemporaryHost* host) {
+    int width = host.hostDisplayWidth;
+    int height = host.hostDisplayHeight;
+    if (width <= 0 || height <= width) {
+        return CGSizeZero;
+    }
+
+    // Same limit as the custom resolutions
+    int maxResolutionDimension = 4096;
+    if (@available(iOS 11.0, tvOS 11.0, *)) {
+        if (VTIsHardwareDecodeSupported(kCMVideoCodecType_HEVC)) {
+            maxResolutionDimension = 8192;
+        }
+    }
+    if (height > maxResolutionDimension) {
+        width = width * maxResolutionDimension / height;
+        height = maxResolutionDimension;
+    }
+    // Encoders want even dimensions
+    return CGSizeMake(width & ~1, height & ~1);
+}
+
 #if !TARGET_OS_TV
 // Turn the device to match what the top controller now allows. iOS 16 wants an
 // explicit geometry request; older systems still take the orientation nudge.
@@ -634,6 +660,10 @@ static NSMutableSet* hostList;
     if (current.width > 0) {
         message = [NSString stringWithFormat:@"%@ streams at %dx%d.", host.name, (int)current.width, (int)current.height];
     }
+    else if (AutoHostStreamResolution(host).width > 0) {
+        CGSize automatic = AutoHostStreamResolution(host);
+        message = [NSString stringWithFormat:@"%@ has a portrait screen, so it streams upright at its own size (%dx%d).", host.name, (int)automatic.width, (int)automatic.height];
+    }
     else {
         message = [NSString stringWithFormat:@"%@ uses the global setting (%@x%@).", host.name, settings.width, settings.height];
     }
@@ -654,7 +684,7 @@ static NSMutableSet* hostList;
         [self promptCustomHostResolution:host current:current];
     }]];
     if (current.width > 0) {
-        [sheet addAction:[UIAlertAction actionWithTitle:@"Use Global Setting" style:UIAlertActionStyleDestructive handler:^(UIAlertAction* action) {
+        [sheet addAction:[UIAlertAction actionWithTitle:@"Reset to Automatic" style:UIAlertActionStyleDestructive handler:^(UIAlertAction* action) {
             SetHostStreamResolution(host.uuid, CGSizeZero);
         }]];
     }
@@ -780,10 +810,16 @@ static NSMutableSet* hostList;
     _streamConfig.height = [streamSettings.height intValue];
     _streamConfig.width = [streamSettings.width intValue];
     CGSize hostResolution = HostStreamResolution(app.host.uuid);
+    CGSize autoResolution = AutoHostStreamResolution(app.host);
     if (hostResolution.width > 0 && hostResolution.height > 0) {
         _streamConfig.width = (int)hostResolution.width;
         _streamConfig.height = (int)hostResolution.height;
         Log(LOG_I, @"Using %@'s own stream resolution: %dx%d", app.host.name, _streamConfig.width, _streamConfig.height);
+    }
+    else if (autoResolution.width > 0 && autoResolution.height > 0) {
+        _streamConfig.width = (int)autoResolution.width;
+        _streamConfig.height = (int)autoResolution.height;
+        Log(LOG_I, @"%@ reports a portrait display, streaming it upright: %dx%d", app.host.name, _streamConfig.width, _streamConfig.height);
     }
 #if TARGET_OS_TV
     // Don't allow streaming 4K on the Apple TV HD
