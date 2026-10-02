@@ -1081,6 +1081,24 @@ static NSMutableSet* hostList;
     [self adjustScrollViewForSafeArea:self->hostScrollView];
 }
 
+// The host list is laid out by hand, so it has to be told when the view
+// changes size. The view can load at portrait width and turn to landscape
+// afterwards; a host list left at the width it loaded with cuts off every
+// host past that edge.
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+
+    if (hostScrollView == nil) {
+        return;
+    }
+    UINavigationBar* bar = self.navigationController.navigationBar;
+    CGRect frame = CGRectMake(0, bar.frame.origin.y + bar.frame.size.height, self.view.frame.size.width, self.view.frame.size.height / 2);
+    if (!CGRectEqualToRect(hostScrollView.frame, frame)) {
+        hostScrollView.frame = frame;
+        [self updateHosts];
+    }
+}
+
 - (void)viewDidLoad
 {
     [super viewDidLoad];
