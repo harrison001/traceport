@@ -10,6 +10,7 @@
 #import "Utils.h"
 
 #import <VideoToolbox/VideoToolbox.h>
+#import <QuartzCore/QuartzCore.h>
 
 #define SDL_MAIN_HANDLED
 #import <SDL.h>
@@ -42,6 +43,8 @@ static NSLock* videoStatsLock;
 static SDL_AudioDeviceID audioDevice;
 static OPUS_MULTISTREAM_CONFIGURATION audioConfig;
 static void* audioBuffer;
+static int audioDropped, audioPlayed;
+static double audioStatsLogged;
 static int audioFrameSize;
 
 /// Whether to drop the stream's sound on the floor.
@@ -216,7 +219,9 @@ int ArInit(int audioConfiguration, POPUS_MULTISTREAM_CONFIGURATION opusConfig, v
     want.freq = opusConfig->sampleRate;
     want.format = AUDIO_S16;
     want.channels = opusConfig->channelCount;
-    want.samples = opusConfig->samplesPerFrame;
+    // A device buffer of a single Opus frame (5-10 ms) underruns whenever iOS pulls a little late,
+    // and every underrun is an audible click. Four frames still keeps playback latency low.
+    want.samples = opusConfig->samplesPerFrame * 4;
 
     audioDevice = SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
     if (audioDevice == 0) {
@@ -308,10 +313,21 @@ void ArDecodeAndPlaySample(char* sampleData, int sampleLength)
         return;
     }
 
-    // Don't queue if there's already more than 30 ms of audio data waiting
-    // in Moonlight's audio queue.
-    if (LiGetPendingAudioDuration() > 30) {
+    // Don't queue if too much audio is already waiting in Moonlight's audio queue. Upstream used
+    // 30 ms, which drops packets on ordinary network jitter (they arrive in bursts) and every dropped
+    // packet is a 5-10 ms hole: the crackle heard on both Linux and macOS hosts. 100 ms absorbs the
+    // jitter and still caps how far audio can fall behind.
+    if (LiGetPendingAudioDuration() > 100) {
+        audioDropped++;
         return;
+    }
+    audioPlayed++;
+    if (CACurrentMediaTime() - audioStatsLogged >= 10) {
+        if (audioDropped > 0) {
+            Log(LOG_I, @"Audio: dropped %d of %d packets in the last 10s (queue over 100 ms)", audioDropped, audioDropped + audioPlayed);
+        }
+        audioDropped = audioPlayed = 0;
+        audioStatsLogged = CACurrentMediaTime();
     }
     
     decodeLen = opus_multistream_decode(opusDecoder, (unsigned char *)sampleData, sampleLength,
