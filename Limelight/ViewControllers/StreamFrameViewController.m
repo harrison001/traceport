@@ -59,6 +59,27 @@
     
 #if !TARGET_OS_TV
     [[self revealViewController] setPrimaryViewController:self];
+
+    // The host list is landscape-only, so the rotate-before-push request in beginStreamSegue is
+    // refused while that list is still on top, and the 1s fallback can push us before any rotation
+    // lands — a portrait stream then shows up sideways in a landscape window. We are on top now and
+    // supportedInterfaceOrientations already allows the stream's shape, so ask again: this time it
+    // is granted, the window rotates, and the video (and the touch map that reads the same bounds)
+    // lays out upright.
+    if (@available(iOS 16.0, *)) {
+        BOOL wantPortrait = self.streamConfig.height > self.streamConfig.width;
+        BOOL isPortrait = self.view.bounds.size.height > self.view.bounds.size.width;
+        UIWindowScene* scene = self.view.window.windowScene;
+        if (scene != nil && wantPortrait != isPortrait) {
+            [self setNeedsUpdateOfSupportedInterfaceOrientations];
+            UIWindowSceneGeometryPreferencesIOS* prefs =
+                [[UIWindowSceneGeometryPreferencesIOS alloc] initWithInterfaceOrientations:
+                    (wantPortrait ? UIInterfaceOrientationMaskPortrait : UIInterfaceOrientationMaskLandscape)];
+            [scene requestGeometryUpdateWithPreferences:prefs errorHandler:^(NSError* e) {
+                Log(LOG_W, @"Stream orientation request refused: %@", e);
+            }];
+        }
+    }
 #endif
 }
 
@@ -189,6 +210,10 @@
     // Only enable scroll and zoom in absolute touch mode
     if (_settings.absoluteTouchMode) {
         _scrollView = [[UIScrollView alloc] initWithFrame:self.view.frame];
+        // Don't let UIKit pad the content by the safe area: the stream view is laid out against the
+        // full screen, so the automatic top inset (Dynamic Island) pushed a portrait stream down and
+        // cut off its bottom edge in touchscreen mode.
+        _scrollView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
 #if !TARGET_OS_TV
         [_scrollView.panGestureRecognizer setMinimumNumberOfTouches:2];
 #endif
