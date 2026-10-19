@@ -17,6 +17,164 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <Limelight.h>
+#include <netdb.h>
+#include <unistd.h>
+#import <AVFoundation/AVFoundation.h>
+
+#if !TARGET_OS_TV
+// Sends this phone's microphone to the host, where TracePort's gateway feeds it into the remote
+// phone's call as its microphone (tools/bthid/mic_rx.py). Moonlight's protocol has no microphone
+// channel, so this is a separate UDP stream to port 48110: 'TPM1' + seq (u32 LE) + flags (u32 LE,
+// 0 = s16le mono 16 kHz) + 20 ms of audio. Voice processing gives echo cancellation and noise
+// suppression, which matters because the other party's voice is playing from this phone's speaker.
+@interface TPMicUplink : NSObject
+@property (nonatomic, readonly) BOOL running;
+- (NSString *)startWithHost:(NSString *)host;   // nil on success, otherwise why it failed
+- (void)stop;
+@end
+
+static const int kMicPort = 48110;
+static const double kMicRate = 16000;
+enum { kMicFrameBytes = 640 };              // 20 ms of 16 kHz mono s16
+
+@implementation TPMicUplink {
+    AVAudioEngine *_engine;
+    AVAudioConverter *_converter;
+    AVAudioFormat *_outFormat;
+    NSMutableData *_pending;
+    int _sock;
+    struct sockaddr_storage _addr;
+    socklen_t _addrLen;
+    uint32_t _seq;
+}
+
+// The stream's host string may carry a port ("host:port", "[v6]:port") or be a bare IPv6 address.
++ (NSString *)bareHost:(NSString *)host {
+    if ([host hasPrefix:@"["]) {
+        NSRange close = [host rangeOfString:@"]"];
+        return close.location != NSNotFound ? [host substringWithRange:NSMakeRange(1, close.location - 1)] : host;
+    }
+    NSArray<NSString *> *parts = [host componentsSeparatedByString:@":"];
+    return parts.count == 2 ? parts[0] : host;
+}
+
+- (NSString *)startWithHost:(NSString *)host {
+    if (_running) return nil;
+    NSString *bare = [TPMicUplink bareHost:host];
+    struct addrinfo hints = {0}, *res = NULL;
+    hints.ai_socktype = SOCK_DGRAM;
+    hints.ai_family = AF_UNSPEC;
+    char port[8];
+    snprintf(port, sizeof(port), "%d", kMicPort);
+    if (getaddrinfo(bare.UTF8String, port, &hints, &res) != 0 || res == NULL) {
+        return [NSString stringWithFormat:@"Can't resolve %@", bare];
+    }
+    _sock = socket(res->ai_family, SOCK_DGRAM, 0);
+    memcpy(&_addr, res->ai_addr, res->ai_addrlen);
+    _addrLen = res->ai_addrlen;
+    freeaddrinfo(res);
+    if (_sock < 0) return @"Can't open a UDP socket";
+
+    NSError *err = nil;
+    AVAudioSession *session = [AVAudioSession sharedInstance];
+    // Play-and-record in voice-chat mode turns on the system's echo cancellation; keep the stream's
+    // audio on the speaker and mixed rather than ducked.
+    if (![session setCategory:AVAudioSessionCategoryPlayAndRecord
+                         mode:AVAudioSessionModeVoiceChat
+                      options:AVAudioSessionCategoryOptionDefaultToSpeaker | AVAudioSessionCategoryOptionAllowBluetooth | AVAudioSessionCategoryOptionMixWithOthers
+                        error:&err]) {
+        [self stop];
+        return [NSString stringWithFormat:@"Audio session: %@", err.localizedDescription];
+    }
+    [session setActive:YES error:nil];
+
+    _engine = [[AVAudioEngine alloc] init];
+    AVAudioInputNode *input = _engine.inputNode;
+    if (![input setVoiceProcessingEnabled:YES error:&err]) {
+        Log(LOG_W, @"Mic uplink: voice processing unavailable: %@", err.localizedDescription);
+    }
+    if (@available(iOS 17.0, *)) {
+        AVAudioVoiceProcessingOtherAudioDuckingConfiguration duck = {
+            .enableAdvancedDucking = NO,
+            .duckingLevel = AVAudioVoiceProcessingOtherAudioDuckingLevelMin,
+        };
+        input.voiceProcessingOtherAudioDuckingConfiguration = duck;
+    }
+    AVAudioFormat *inFormat = [input outputFormatForBus:0];
+    _outFormat = [[AVAudioFormat alloc] initWithCommonFormat:AVAudioPCMFormatInt16
+                                                  sampleRate:kMicRate channels:1 interleaved:YES];
+    _converter = [[AVAudioConverter alloc] initFromFormat:inFormat toFormat:_outFormat];
+    _pending = [NSMutableData data];
+    _seq = 0;
+
+    __weak TPMicUplink *weakSelf = self;
+    [input installTapOnBus:0
+                bufferSize:(AVAudioFrameCount)(inFormat.sampleRate * 0.02)
+                    format:inFormat
+                     block:^(AVAudioPCMBuffer *buffer, AVAudioTime *when) {
+        [weakSelf handleBuffer:buffer];
+    }];
+    [_engine prepare];
+    if (![_engine startAndReturnError:&err]) {
+        [self stop];
+        return [NSString stringWithFormat:@"Microphone: %@", err.localizedDescription];
+    }
+    _running = YES;
+    Log(LOG_I, @"Mic uplink started to %@:%d (%.0f Hz in)", bare, kMicPort, inFormat.sampleRate);
+    return nil;
+}
+
+- (void)handleBuffer:(AVAudioPCMBuffer *)buffer {
+    AVAudioFrameCount cap = (AVAudioFrameCount)ceil(buffer.frameLength * kMicRate / buffer.format.sampleRate) + 32;
+    AVAudioPCMBuffer *out = [[AVAudioPCMBuffer alloc] initWithPCMFormat:_outFormat frameCapacity:cap];
+    __block BOOL fed = NO;
+    NSError *err = nil;
+    [_converter convertToBuffer:out error:&err withInputFromBlock:^AVAudioBuffer *(AVAudioPacketCount count, AVAudioConverterInputStatus *status) {
+        if (fed) {
+            *status = AVAudioConverterInputStatus_NoDataNow;
+            return nil;
+        }
+        fed = YES;
+        *status = AVAudioConverterInputStatus_HaveData;
+        return buffer;
+    }];
+    if (out.frameLength == 0) return;
+    [_pending appendBytes:out.int16ChannelData[0] length:out.frameLength * sizeof(int16_t)];
+
+    uint8_t packet[12 + kMicFrameBytes];
+    memcpy(packet, "TPM1", 4);
+    uint32_t flags = 0;
+    while (_pending.length >= kMicFrameBytes) {
+        uint32_t seq = CFSwapInt32HostToLittle(_seq++);
+        memcpy(packet + 4, &seq, 4);
+        memcpy(packet + 8, &flags, 4);
+        memcpy(packet + 12, _pending.bytes, kMicFrameBytes);
+        sendto(_sock, packet, sizeof(packet), 0, (struct sockaddr *)&_addr, _addrLen);
+        [_pending replaceBytesInRange:NSMakeRange(0, kMicFrameBytes) withBytes:NULL length:0];
+    }
+}
+
+- (void)stop {
+    if (_engine != nil) {
+        [_engine.inputNode removeTapOnBus:0];
+        [_engine stop];
+        [_engine.inputNode setVoiceProcessingEnabled:NO error:nil];
+        _engine = nil;
+    }
+    if (_sock > 0) {
+        close(_sock);
+    }
+    _sock = -1;
+    if (_running) {
+        // Back to what Connection.m set up for stream audio.
+        [[AVAudioSession sharedInstance] setCategory:AVAudioSessionCategoryPlayback
+                                         withOptions:AVAudioSessionCategoryOptionMixWithOthers error:nil];
+        Log(LOG_I, @"Mic uplink stopped after %u packets", _seq);
+    }
+    _running = NO;
+}
+@end
+#endif
 
 #if TARGET_OS_TV
 #import <AVFoundation/AVDisplayCriteria.h>
@@ -50,6 +208,8 @@
     
 #if !TARGET_OS_TV
     UIScreenEdgePanGestureRecognizer *_exitSwipeRecognizer;
+    TPMicUplink *_micUplink;
+    UIButton *_micButton;
 #endif
 }
 
@@ -243,6 +403,9 @@
 - (void)willMoveToParentViewController:(UIViewController *)parent {
     // Only cleanup when we're being destroyed
     if (parent == nil) {
+#if !TARGET_OS_TV
+        [_micUplink stop];
+#endif
         [_controllerSupport cleanup];
         [UIApplication sharedApplication].idleTimerDisabled = NO;
         [_streamMan stopStream];
@@ -392,6 +555,61 @@
     [self returnToMainFrame];
 }
 
+#if !TARGET_OS_TV
+- (void)showMicButton {
+    if (_micButton != nil) return;
+    _micButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    CGFloat size = 44;
+    CGFloat top = self.view.safeAreaInsets.top + 8;
+    _micButton.frame = CGRectMake(self.view.bounds.size.width - size - 12, top, size, size);
+    _micButton.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleBottomMargin;
+    _micButton.backgroundColor = [UIColor colorWithWhite:0 alpha:0.45];
+    _micButton.layer.cornerRadius = size / 2;
+    _micButton.accessibilityLabel = @"Microphone";
+    [_micButton addTarget:self action:@selector(micButtonTapped) forControlEvents:UIControlEventTouchUpInside];
+    [self updateMicButton];
+    [self.view addSubview:_micButton];
+}
+
+- (void)updateMicButton {
+    BOOL on = _micUplink.running;
+    [_micButton setImage:[UIImage systemImageNamed:on ? @"mic.fill" : @"mic.slash.fill"] forState:UIControlStateNormal];
+    _micButton.tintColor = on ? [UIColor systemRedColor] : [UIColor whiteColor];
+}
+
+- (void)micButtonTapped {
+    if (_micUplink.running) {
+        [_micUplink stop];
+        [self updateMicButton];
+        return;
+    }
+    [[AVAudioSession sharedInstance] requestRecordPermission:^(BOOL granted) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (!granted) {
+                [self showMicError:@"Microphone access is off. Turn it on in Settings > TracePort."];
+                return;
+            }
+            if (self->_micUplink == nil) {
+                self->_micUplink = [[TPMicUplink alloc] init];
+            }
+            NSString *err = [self->_micUplink startWithHost:self.streamConfig.host];
+            if (err != nil) {
+                [self showMicError:err];
+            }
+            [self updateMicButton];
+        });
+    }];
+}
+
+- (void)showMicError:(NSString *)message {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Microphone"
+                                                                   message:message
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+#endif
+
 - (void) connectionStarted {
     Log(LOG_I, @"Connection started");
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -401,6 +619,9 @@
         self->_tipLabel.hidden = YES;
         
         [self->_streamView showOnScreenControls];
+#if !TARGET_OS_TV
+        [self showMicButton];
+#endif
         
         [self->_controllerSupport connectionEstablished];
         

@@ -58,6 +58,8 @@
 	</array>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>TracePort uses the local network to find and connect to your computer.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>TracePort sends your voice to the remote phone during calls you make or answer on it.</string>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
 	<key>UILaunchStoryboardName</key>
