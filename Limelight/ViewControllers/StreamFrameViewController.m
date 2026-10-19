@@ -39,6 +39,8 @@ enum { kMicFrameBytes = 640 };              // 20 ms of 16 kHz mono s16
 
 @implementation TPMicUplink {
     AVAudioEngine *_engine;
+    AVAudioSinkNode *_sink;
+    dispatch_queue_t _sendQueue;
     AVAudioConverter *_converter;
     AVAudioFormat *_outFormat;
     NSMutableData *_pending;
@@ -86,6 +88,8 @@ enum { kMicFrameBytes = 640 };              // 20 ms of 16 kHz mono s16
         [self stop];
         return [NSString stringWithFormat:@"Audio session: %@", err.localizedDescription];
     }
+    // Ask for 10 ms I/O buffers so audio comes out of the hardware in small, evenly spaced pieces.
+    [session setPreferredIOBufferDuration:0.01 error:nil];
     [session setActive:YES error:nil];
 
     _engine = [[AVAudioEngine alloc] init];
@@ -107,13 +111,34 @@ enum { kMicFrameBytes = 640 };              // 20 ms of 16 kHz mono s16
     _pending = [NSMutableData data];
     _seq = 0;
 
+    // A sink node is called on every hardware render cycle (~10 ms here). A tap was simpler but iOS
+    // hands taps ~100 ms at a time whatever bufferSize asks for, so packets left in bursts of five
+    // or six and the gateway saw 0 ms / 114 ms gaps (median / 95th percentile) and had to buffer
+    // ~140 ms to avoid dropouts. The render thread only copies; conversion and sending happen on a
+    // serial queue.
+    _sendQueue = dispatch_queue_create("io.traceone.mic-uplink", DISPATCH_QUEUE_SERIAL);
     __weak TPMicUplink *weakSelf = self;
-    [input installTapOnBus:0
-                bufferSize:(AVAudioFrameCount)(inFormat.sampleRate * 0.02)
-                    format:inFormat
-                     block:^(AVAudioPCMBuffer *buffer, AVAudioTime *when) {
-        [weakSelf handleBuffer:buffer];
+    AVAudioFormat *sinkFormat = inFormat;
+    _sink = [[AVAudioSinkNode alloc] initWithReceiverBlock:^OSStatus(const AudioTimeStamp *timestamp,
+                                                                    AVAudioFrameCount frameCount,
+                                                                    const AudioBufferList *inputData) {
+        TPMicUplink *strongSelf = weakSelf;
+        if (strongSelf == nil || frameCount == 0) return noErr;
+        AVAudioPCMBuffer *copy = [[AVAudioPCMBuffer alloc] initWithPCMFormat:sinkFormat frameCapacity:frameCount];
+        copy.frameLength = frameCount;
+        const AudioBufferList *dst = copy.audioBufferList;
+        UInt32 n = MIN(inputData->mNumberBuffers, dst->mNumberBuffers);
+        for (UInt32 i = 0; i < n; i++) {
+            memcpy(dst->mBuffers[i].mData, inputData->mBuffers[i].mData,
+                   MIN(inputData->mBuffers[i].mDataByteSize, dst->mBuffers[i].mDataByteSize));
+        }
+        dispatch_async(strongSelf->_sendQueue, ^{
+            [weakSelf handleBuffer:copy];
+        });
+        return noErr;
     }];
+    [_engine attachNode:_sink];
+    [_engine connect:input to:_sink format:inFormat];
     [_engine prepare];
     if (![_engine startAndReturnError:&err]) {
         [self stop];
@@ -156,8 +181,11 @@ enum { kMicFrameBytes = 640 };              // 20 ms of 16 kHz mono s16
 
 - (void)stop {
     if (_engine != nil) {
-        [_engine.inputNode removeTapOnBus:0];
         [_engine stop];
+        if (_sink != nil) {
+            [_engine detachNode:_sink];
+            _sink = nil;
+        }
         [_engine.inputNode setVoiceProcessingEnabled:NO error:nil];
         _engine = nil;
     }
