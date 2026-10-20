@@ -96,7 +96,7 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     self->streamedAppName = streamConfig.appName;
 #endif
     
-    TemporarySettings* settings = [[[DataManager alloc] init] getSettings];
+    TemporarySettings* settings = [[[DataManager alloc] init] getSettingsForHost:streamConfig.hostUuid];
     
     keysDown = [[NSMutableSet alloc] init];
     keyInputField = [[KeyboardInputField alloc] initWithFrame:CGRectZero];

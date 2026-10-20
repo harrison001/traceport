@@ -292,7 +292,7 @@ enum { kMicFrameBytes = 640 };              // 20 ms of 16 kHz mono s16
     
     [UIApplication sharedApplication].idleTimerDisabled = YES;
     
-    _settings = [[[DataManager alloc] init] getSettings];
+    _settings = [[[DataManager alloc] init] getSettingsForHost:_streamConfig.hostUuid];
     
     _stageLabel = [[UILabel alloc] init];
     [_stageLabel setUserInteractionEnabled:NO];

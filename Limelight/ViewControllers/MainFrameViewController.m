@@ -7,6 +7,7 @@
 
 @import ImageIO;
 
+#import "HostSettingsViewController.h"
 #import "MainFrameViewController.h"
 #import "CryptoManager.h"
 #import "HttpManager.h"
@@ -617,8 +618,15 @@ static NSMutableSet* hostList;
             });
         }];
     }]];
-    [longClickAlert addAction:[UIAlertAction actionWithTitle:@"Stream Resolution for This Host" style:UIAlertActionStyleDefault handler:^(UIAlertAction* action) {
-        [self promptHostResolution:host view:view];
+    [longClickAlert addAction:[UIAlertAction actionWithTitle:@"Settings for This Host" style:UIAlertActionStyleDefault handler:^(UIAlertAction* action) {
+        HostSettingsViewController* hostSettings = [[HostSettingsViewController alloc] initWithHostUuid:host.uuid name:host.name];
+        __weak MainFrameViewController* weakSelf = self;
+        hostSettings.chooseResolution = ^{
+            [weakSelf promptHostResolution:host view:view];
+        };
+        UINavigationController* nav = [[UINavigationController alloc] initWithRootViewController:hostSettings];
+        nav.modalPresentationStyle = UIModalPresentationFormSheet;
+        [[self activeViewController] presentViewController:nav animated:YES completion:nil];
     }]];
 #if !TARGET_OS_TV
     if (host.state != StateOnline) {
@@ -635,6 +643,7 @@ static NSMutableSet* hostList;
         DataManager* dataMan = [[DataManager alloc] init];
         [dataMan removeHost:host];
         SetHostStreamResolution(host.uuid, CGSizeZero);
+        [HostProfile resetOverridesForHost:host.uuid];
         @synchronized(hostList) {
             [hostList removeObject:host];
             [self updateAllHosts:[hostList allObjects]];
@@ -796,7 +805,15 @@ static NSMutableSet* hostList;
     _streamConfig.serverCert = app.host.serverCert;
     
     DataManager* dataMan = [[DataManager alloc] init];
-    TemporarySettings* streamSettings = [dataMan getSettings];
+    // This host's own choices over the global ones; anything that reads settings later in the
+    // stream without the configuration at hand (gamepad counting) finds the host here.
+    [HostProfile setActiveHost:app.host.uuid];
+    // A host that reports a portrait display is the gateway mirroring a phone. Until the user
+    // says otherwise, treat it as one: that picks the phone's touch handling and key bar.
+    if (![HostProfile hasTargetTypeForHost:app.host.uuid] && AutoHostStreamResolution(app.host).width > 0) {
+        [HostProfile setTargetType:TPTargetPhone forHost:app.host.uuid];
+    }
+    TemporarySettings* streamSettings = [dataMan getSettingsForHost:app.host.uuid];
     
     _streamConfig.frameRate = [streamSettings.framerate intValue];
     if (@available(iOS 10.3, *)) {

@@ -147,6 +147,12 @@
     return tempSettings;
 }
 
+- (TemporarySettings*) getSettingsForHost:(NSString*)uuid {
+    TemporarySettings* settings = [self getSettings];
+    [HostProfile applyOverridesForHost:uuid toSettings:settings];
+    return settings;
+}
+
 - (Settings*) retrieveSettings {
     NSArray* fetchedRecords = [self fetchRecords:@"Settings"];
     if (fetchedRecords.count == 0) {
@@ -243,3 +249,122 @@
 
 @end
 
+
+
+static NSString* const kHostProfileKey = @"TracePortHostProfile";
+static NSString* const kTargetTypeKey = @"targetType";
+static NSString* sActiveHost;
+
+@implementation HostProfile
+
++ (NSArray<NSString*>*) overridableKeys {
+    return @[@"bitrate", @"framerate", @"audioConfig", @"onscreenControls", @"preferredCodec",
+             @"useFramePacing", @"multiController", @"swapABXYButtons", @"playAudioOnPC",
+             @"optimizeGames", @"enableHdr", @"btMouseSupport", @"absoluteTouchMode", @"statsOverlay"];
+}
+
++ (NSMutableDictionary*) entryForHost:(NSString*)uuid {
+    if (uuid.length == 0) {
+        return [NSMutableDictionary dictionary];
+    }
+    NSDictionary* entry = [[NSUserDefaults standardUserDefaults] dictionaryForKey:kHostProfileKey][uuid];
+    return [entry isKindOfClass:[NSDictionary class]] ? [entry mutableCopy] : [NSMutableDictionary dictionary];
+}
+
++ (void) storeEntry:(NSDictionary*)entry forHost:(NSString*)uuid {
+    if (uuid.length == 0) {
+        return;
+    }
+    NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
+    NSMutableDictionary* all = [[defaults dictionaryForKey:kHostProfileKey] mutableCopy] ?: [NSMutableDictionary dictionary];
+    if (entry.count > 0) {
+        all[uuid] = entry;
+    }
+    else {
+        [all removeObjectForKey:uuid];
+    }
+    [defaults setObject:all forKey:kHostProfileKey];
+}
+
++ (NSDictionary<NSString*, NSNumber*>*) overridesForHost:(NSString*)uuid {
+    NSMutableDictionary* entry = [self entryForHost:uuid];
+    [entry removeObjectForKey:kTargetTypeKey];
+    return entry;
+}
+
++ (void) setOverride:(NSNumber*)value forKey:(NSString*)key host:(NSString*)uuid {
+    if (![[self overridableKeys] containsObject:key]) {
+        return;
+    }
+    NSMutableDictionary* entry = [self entryForHost:uuid];
+    if (value != nil) {
+        entry[key] = value;
+    }
+    else {
+        [entry removeObjectForKey:key];
+    }
+    [self storeEntry:entry forHost:uuid];
+}
+
++ (void) resetOverridesForHost:(NSString*)uuid {
+    NSMutableDictionary* entry = [self entryForHost:uuid];
+    NSNumber* type = entry[kTargetTypeKey];
+    [entry removeAllObjects];
+    if (type != nil) {
+        entry[kTargetTypeKey] = type;
+    }
+    [self storeEntry:entry forHost:uuid];
+}
+
++ (void) applyOverridesForHost:(NSString*)uuid toSettings:(TemporarySettings*)settings {
+    NSDictionary* overrides = [self overridesForHost:uuid];
+    for (NSString* key in overrides) {
+        if (![[self overridableKeys] containsObject:key]) {
+            continue;
+        }
+        // KVC unboxes NSNumber into the BOOL and enum properties as well as the NSNumber ones
+        [settings setValue:overrides[key] forKey:key];
+    }
+}
+
++ (BOOL) hasTargetTypeForHost:(NSString*)uuid {
+    return [self entryForHost:uuid][kTargetTypeKey] != nil;
+}
+
++ (TPTargetType) targetTypeForHost:(NSString*)uuid {
+    NSNumber* stored = [self entryForHost:uuid][kTargetTypeKey];
+    if (stored != nil) {
+        return (TPTargetType)stored.integerValue;
+    }
+    // What the key bar was told before hosts had a type: 0 = macOS, 1 = Windows
+    NSNumber* keyBarKind = uuid.length > 0 ? [[NSUserDefaults standardUserDefaults] objectForKey:[@"KeyBarHostKind." stringByAppendingString:uuid]] : nil;
+    if (keyBarKind != nil) {
+        return keyBarKind.integerValue == 0 ? TPTargetMacOS : TPTargetDesktop;
+    }
+    return TPTargetDesktop;
+}
+
++ (void) setTargetType:(TPTargetType)type forHost:(NSString*)uuid {
+    NSMutableDictionary* entry = [self entryForHost:uuid];
+    entry[kTargetTypeKey] = @(type);
+    [self storeEntry:entry forHost:uuid];
+}
+
++ (NSString*) nameForTargetType:(TPTargetType)type {
+    switch (type) {
+        case TPTargetMacOS: return @"macOS";
+        case TPTargetPhone: return @"Phone (TracePort gateway)";
+        case TPTargetDesktop:
+        default: return @"Windows / Linux";
+    }
+}
+
++ (NSString*) activeHost {
+    return sActiveHost;
+}
+
++ (void) setActiveHost:(NSString*)uuid {
+    sActiveHost = [uuid copy];
+}
+
+@end

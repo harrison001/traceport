@@ -4,6 +4,7 @@
 //
 
 #import "KeyMacros.h"
+#import "DataManager.h"
 
 @implementation KeyStep
 
@@ -711,6 +712,11 @@ static NSArray<KeyDefaultsKeyBuilder> *KeyProfileDefaultsKeys(void) {
 }
 
 + (KeyMacroHost)hostKindForKey:(NSString *)key {
+    // The host's type, once set (per-host settings), is the one answer; the key bar's own
+    // record below is what was chosen before hosts had a type.
+    if (key.length > 0 && [HostProfile hasTargetTypeForHost:key]) {
+        return [HostProfile targetTypeForHost:key] == TPTargetMacOS ? KeyMacroHostMacOS : KeyMacroHostWindows;
+    }
     NSString *defaultsKey = KeyMacroHostDefaultsKey(key);
     NSNumber *stored = [[NSUserDefaults standardUserDefaults] objectForKey:defaultsKey];
     return stored != nil ? (KeyMacroHost)stored.integerValue : [self defaultHost];
@@ -718,6 +724,10 @@ static NSArray<KeyDefaultsKeyBuilder> *KeyProfileDefaultsKeys(void) {
 
 + (void)setHostKind:(KeyMacroHost)kind forKey:(NSString *)key {
     [[NSUserDefaults standardUserDefaults] setInteger:kind forKey:KeyMacroHostDefaultsKey(key)];
+    // Keep the host's type in step, but never turn a phone into a desktop from the key bar
+    if (key.length > 0 && [HostProfile targetTypeForHost:key] != TPTargetPhone) {
+        [HostProfile setTargetType:kind == KeyMacroHostMacOS ? TPTargetMacOS : TPTargetDesktop forHost:key];
+    }
 }
 
 + (NSString *)nameForHostKind:(KeyMacroHost)kind {
