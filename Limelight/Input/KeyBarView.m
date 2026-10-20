@@ -1470,7 +1470,7 @@ static NSString *KeyBarProfileKey(NSString *hostKey, NSString *appName) {
     // ours. A strong self here would keep the whole bar alive after it is dismissed.
     __weak KeyBarView *weakSelf = self;
 
-    for (NSNumber *kindNumber in @[@(KeyMacroHostMacOS), @(KeyMacroHostWindows)]) {
+    for (NSNumber *kindNumber in @[@(KeyMacroHostMacOS), @(KeyMacroHostWindows), @(KeyMacroHostPhone)]) {
         KeyMacroHost kind = (KeyMacroHost)kindNumber.integerValue;
         UIAction *action = [UIAction actionWithTitle:[KeyMacros nameForHostKind:kind]
                                                image:nil

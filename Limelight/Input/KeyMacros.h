@@ -26,6 +26,9 @@ NS_ASSUME_NONNULL_BEGIN
 typedef NS_ENUM(NSInteger, KeyMacroHost) {
     KeyMacroHostMacOS,
     KeyMacroHostWindows,
+    /// A phone driven through the TracePort gateway. Its actions are F13–F23, which the gateway
+    /// bridge turns into the phone's own (home, app switcher, back...); see ios_bridge phone_keys.
+    KeyMacroHostPhone,
 };
 
 /// How an item behaves when tapped.

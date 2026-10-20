@@ -203,7 +203,8 @@ static NSString *KeyHiddenDefaultsKey(NSString *profileKey) {
 }
 
 + (NSArray<KeyGroup *> *)keyboardGroupsForHost:(KeyMacroHost)host {
-    BOOL mac = host == KeyMacroHostMacOS;
+    // A phone takes Apple's modifiers too: iOS reads ⌘ and ⌥ from a hardware keyboard
+    BOOL mac = host != KeyMacroHostWindows;
     return @[
         // Leftmost, so their position never moves. Tapping once arms one for the next key,
         // twice holds it down — which is what makes ⌃C typeable with the system keyboard.
@@ -308,7 +309,7 @@ static NSString *KeyHiddenDefaultsKey(NSString *profileKey) {
 }
 
 + (KeyGroup *)textGroupForHost:(KeyMacroHost)host {
-    BOOL mac = host == KeyMacroHostMacOS;
+    BOOL mac = host != KeyMacroHostWindows;
     UIKeyModifierFlags m = mac ? UIKeyModifierCommand : UIKeyModifierControl;
     NSString *sym = mac ? @"⌘" : @"⌃";
     KeyItem *(^chord)(NSString *, short, NSString *) =
@@ -339,6 +340,26 @@ static NSString *KeyHiddenDefaultsKey(NSString *profileKey) {
 /// so these are their keyboard equivalents — which is what the gestures trigger anyway.
 + (KeyGroup *)systemGroupForHost:(KeyMacroHost)host {
     UIKeyModifierFlags shift = UIKeyModifierShift;
+
+    if (host == KeyMacroHostPhone) {
+        // F13–F23 mean nothing to a phone; the gateway bridge turns each into the phone action
+        // named here (ios_bridge.py phone_keys). The swipes — kill, back, the two flicks — are
+        // real finger gestures made through WebDriverAgent, so they need it running on the phone.
+        return [KeyGroup groupNamed:@"iPhone" items:@[
+            [[KeyItem macro:@"Home" code:0x7C flags:0] explained:@"Home Screen"],
+            [[KeyItem macro:@"Apps" code:0x7D flags:0] explained:@"App switcher"],
+            [[KeyItem macro:@"Back" code:0x84 flags:0] explained:@"Back (swipe from the left edge)"],
+            [[KeyItem macro:@"Kill" code:0x83 flags:0] explained:@"Close the current app"],
+            [[KeyItem macro:@"CC" code:0x7E flags:0] explained:@"Control Center"],
+            [[KeyItem macro:@"Notif" code:0x7F flags:0] explained:@"Notification Center"],
+            [[[KeyItem macro:@"Search" code:0x80 flags:0] explained:@"Spotlight — type to search"]
+              needingKeyboard],
+            [[KeyItem macro:@"Lock" code:0x81 flags:0] explained:@"Lock the screen"],
+            [[KeyItem macro:@"Shot" code:0x82 flags:0] explained:@"Screenshot"],
+            [[KeyItem macro:@"◀︎" code:0x85 flags:0] explained:@"Swipe left (next page)"],
+            [[KeyItem macro:@"▶︎" code:0x86 flags:0] explained:@"Swipe right (previous page)"],
+        ]];
+    }
 
     if (host == KeyMacroHostMacOS) {
         UIKeyModifierFlags cmd = UIKeyModifierCommand;
@@ -382,6 +403,13 @@ static NSString *KeyHiddenDefaultsKey(NSString *profileKey) {
 }
 
 + (NSArray<KeyGroup *> *)macroCatalogueForHost:(KeyMacroHost)host {
+    if (host == KeyMacroHostPhone) {
+        return @[
+            [self systemGroupForHost:host],
+            [self textGroupForHost:host],
+            [self scrollGroup],
+        ];
+    }
     if (host == KeyMacroHostMacOS) {
         return @[
             [self tmuxGroup],
@@ -409,6 +437,14 @@ static NSString *KeyHiddenDefaultsKey(NSString *profileKey) {
 /// person, and anyone who lives in tmux can add them back faster than everyone else can clear
 /// them out. Copy, paste, undo and scrolling are wanted by whoever is holding the phone.
 + (NSArray<NSString *> *)defaultPadLabelsForHost:(KeyMacroHost)host {
+    if (host == KeyMacroHostPhone) {
+        return @[
+            // Left column: getting around the phone, which a remote picture has no buttons for
+            @"Home", @"Apps", @"Back", @"Kill", @"CC", @"Notif", @"Search", @"Lock",
+            // Right column: editing, page flicks and scrolling
+            @"⌘C", @"⌘V", @"⌘Z", @"⌘A", @"◀︎", @"▶︎", @"∧", @"∨",
+        ];
+    }
     if (host == KeyMacroHostMacOS) {
         return @[
             // Left column: getting to a program or a window, which is what a phone is worst at
@@ -715,7 +751,11 @@ static NSArray<KeyDefaultsKeyBuilder> *KeyProfileDefaultsKeys(void) {
     // The host's type, once set (per-host settings), is the one answer; the key bar's own
     // record below is what was chosen before hosts had a type.
     if (key.length > 0 && [HostProfile hasTargetTypeForHost:key]) {
-        return [HostProfile targetTypeForHost:key] == TPTargetMacOS ? KeyMacroHostMacOS : KeyMacroHostWindows;
+        switch ([HostProfile targetTypeForHost:key]) {
+            case TPTargetMacOS: return KeyMacroHostMacOS;
+            case TPTargetPhone: return KeyMacroHostPhone;
+            default: return KeyMacroHostWindows;
+        }
     }
     NSString *defaultsKey = KeyMacroHostDefaultsKey(key);
     NSNumber *stored = [[NSUserDefaults standardUserDefaults] objectForKey:defaultsKey];
@@ -724,14 +764,19 @@ static NSArray<KeyDefaultsKeyBuilder> *KeyProfileDefaultsKeys(void) {
 
 + (void)setHostKind:(KeyMacroHost)kind forKey:(NSString *)key {
     [[NSUserDefaults standardUserDefaults] setInteger:kind forKey:KeyMacroHostDefaultsKey(key)];
-    // Keep the host's type in step, but never turn a phone into a desktop from the key bar
-    if (key.length > 0 && [HostProfile targetTypeForHost:key] != TPTargetPhone) {
-        [HostProfile setTargetType:kind == KeyMacroHostMacOS ? TPTargetMacOS : TPTargetDesktop forHost:key];
+    // Keep the host's type in step: the key bar's "Host runs" and the host settings are one choice
+    if (key.length > 0) {
+        TPTargetType type = kind == KeyMacroHostMacOS ? TPTargetMacOS : kind == KeyMacroHostPhone ? TPTargetPhone : TPTargetDesktop;
+        [HostProfile setTargetType:type forHost:key];
     }
 }
 
 + (NSString *)nameForHostKind:(KeyMacroHost)kind {
-    return kind == KeyMacroHostMacOS ? @"macOS" : @"Windows";
+    switch (kind) {
+        case KeyMacroHostMacOS: return @"macOS";
+        case KeyMacroHostPhone: return @"iPhone";
+        default: return @"Windows";
+    }
 }
 
 @end
