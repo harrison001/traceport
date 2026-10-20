@@ -22,6 +22,9 @@
 // How far the finger can move before it can override the double tap deadzone
 #define DOUBLE_TAP_DEAD_ZONE_DELTA 0.025f
 
+// Phone mode: how long a press waits for a second finger (a two-finger scroll must not tap)
+#define PHONE_PRESS_DELAY 0.070f
+
 @implementation AbsoluteTouchHandler {
     StreamView* view;
     
@@ -30,12 +33,36 @@
     CGPoint lastTouchDownLocation;
     UITouch* lastTouchUp;
     CGPoint lastTouchUpLocation;
+
+    BOOL phoneMode;
+    NSTimer* pressTimer;     // phone mode: pending press
+    BOOL pressed;            // left button is down for this gesture
+    BOOL multiTouch;         // a second finger joined: this gesture never presses
 }
 
 - (id)initWithView:(StreamView*)view {
+    return [self initWithView:view phoneMode:NO];
+}
+
+- (id)initWithView:(StreamView*)view phoneMode:(BOOL)mode {
     self = [self init];
     self->view = view;
+    self->phoneMode = mode;
     return self;
+}
+
+- (void)pressNow {
+    [pressTimer invalidate];
+    pressTimer = nil;
+    if (!pressed && !multiTouch) {
+        LiSendMouseButtonEvent(BUTTON_ACTION_PRESS, BUTTON_LEFT);
+        pressed = YES;
+    }
+}
+
+- (void)onPressDelayElapsed:(NSTimer*)timer {
+    pressTimer = nil;
+    [self pressNow];
 }
 
 - (void)onLongPressStart:(NSTimer*)timer {
@@ -47,8 +74,15 @@
 - (void)touchesBegan:(NSSet *)touches withEvent:(UIEvent *)event {
     // Ignore touch down events with more than one finger
     if ([[event allTouches] count] > 1) {
+        if (phoneMode && !pressed) {
+            // A second finger before the press went out: a two-finger gesture, not a tap
+            multiTouch = YES;
+            [pressTimer invalidate];
+            pressTimer = nil;
+        }
         return;
     }
+    multiTouch = NO;
     
     UITouch* touch = [touches anyObject];
     CGPoint touchLocation = [touch locationInView:view];
@@ -60,15 +94,27 @@
         [view updateCursorLocation:touchLocation isMouse:NO];
     }
     
-    // Press the left button down
-    LiSendMouseButtonEvent(BUTTON_ACTION_PRESS, BUTTON_LEFT);
-    
-    // Start the long press timer
-    longPressTimer = [NSTimer scheduledTimerWithTimeInterval:LONG_PRESS_ACTIVATION_DELAY
+    if (phoneMode) {
+        // Wait briefly for a second finger; a long press on a phone stays a long press
+        [pressTimer invalidate];
+        pressTimer = [NSTimer scheduledTimerWithTimeInterval:PHONE_PRESS_DELAY
                                                       target:self
-                                                    selector:@selector(onLongPressStart:)
+                                                    selector:@selector(onPressDelayElapsed:)
                                                     userInfo:nil
                                                      repeats:NO];
+    }
+    else {
+        // Press the left button down
+        LiSendMouseButtonEvent(BUTTON_ACTION_PRESS, BUTTON_LEFT);
+        pressed = YES;
+
+        // Start the long press timer
+        longPressTimer = [NSTimer scheduledTimerWithTimeInterval:LONG_PRESS_ACTIVATION_DELAY
+                                                          target:self
+                                                        selector:@selector(onLongPressStart:)
+                                                        userInfo:nil
+                                                         repeats:NO];
+    }
     
     lastTouchDown = touch;
     lastTouchDownLocation = touchLocation;
@@ -88,6 +134,14 @@
         // Moved too far since touch down. Cancel the long press timer.
         [longPressTimer invalidate];
         longPressTimer = nil;
+
+        // Phone mode: a swipe has started, so press now, still at the start point
+        if (phoneMode && pressTimer != nil) {
+            [self pressNow];
+        }
+    }
+    if (multiTouch) {
+        return;
     }
     
     [view updateCursorLocation:[[touches anyObject] locationInView:view] isMouse:NO];
@@ -99,6 +153,13 @@
         // Cancel the long press timer
         [longPressTimer invalidate];
         longPressTimer = nil;
+
+        // Phone mode: a tap quicker than the press delay still taps
+        if (phoneMode && pressTimer != nil) {
+            [self pressNow];
+        }
+        pressed = NO;
+        multiTouch = NO;
 
         // Left button up on finger up
         LiSendMouseButtonEvent(BUTTON_ACTION_RELEASE, BUTTON_LEFT);

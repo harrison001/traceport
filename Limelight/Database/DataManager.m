@@ -149,6 +149,11 @@
 
 - (TemporarySettings*) getSettingsForHost:(NSString*)uuid {
     TemporarySettings* settings = [self getSettings];
+    // A phone is driven by tapping where you want, so it defaults to touchscreen mode;
+    // a touch mode chosen for the host still wins (applied next).
+    if (uuid.length > 0 && [HostProfile targetTypeForHost:uuid] == TPTargetPhone) {
+        settings.absoluteTouchMode = YES;
+    }
     [HostProfile applyOverridesForHost:uuid toSettings:settings];
     return settings;
 }

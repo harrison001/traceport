@@ -14,6 +14,11 @@ NS_ASSUME_NONNULL_BEGIN
 
 -(id)initWithView:(StreamView*)view;
 
+/// Phone mode, for a phone driven through the TracePort gateway. A press there is a real tap on
+/// the phone, so the press waits a moment to see whether a second finger follows (two fingers
+/// scroll and must not tap), and a long press stays a long press instead of becoming a right click.
+-(id)initWithView:(StreamView*)view phoneMode:(BOOL)phoneMode;
+
 @end
 
 NS_ASSUME_NONNULL_END

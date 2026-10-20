@@ -112,7 +112,8 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
 #else
     // iOS uses RelativeTouchHandler or AbsoluteTouchHandler depending on user preference
     if (settings.absoluteTouchMode) {
-        self->touchHandler = [[AbsoluteTouchHandler alloc] initWithView:self];
+        BOOL phone = [HostProfile targetTypeForHost:streamConfig.hostUuid] == TPTargetPhone;
+        self->touchHandler = [[AbsoluteTouchHandler alloc] initWithView:self phoneMode:phone];
     }
     else {
         self->touchHandler = [[RelativeTouchHandler alloc] initWithView:self];

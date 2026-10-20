@@ -236,6 +236,9 @@ enum { kMicFrameBytes = 640 };              // 20 ms of 16 kHz mono s16
     
 #if !TARGET_OS_TV
     UIScreenEdgePanGestureRecognizer *_exitSwipeRecognizer;
+    UIPanGestureRecognizer *_twoFingerScrollRecognizer;      // touchscreen mode: two fingers scroll the host
+    CGPoint _lastTwoFingerTranslation;
+    UIScreenEdgePanGestureRecognizer *_phoneHomeRecognizer;  // phone host: swipe up from the bottom edge
     TPMicUplink *_micUplink;
     UIButton *_micButton;
 #endif
@@ -413,6 +416,24 @@ enum { kMicFrameBytes = 640 };              // 20 ms of 16 kHz mono s16
         // Add StreamView inside a UIScrollView for absolute mode
         [_scrollView addSubview:_streamView];
         [self.view addSubview:_scrollView];
+#if !TARGET_OS_TV
+        // Two fingers scroll the host while the picture is at its normal size; once zoomed they
+        // pan the picture as before. Without this, two fingers did nothing at 1x in this mode.
+        _scrollView.scrollEnabled = NO;
+        _twoFingerScrollRecognizer = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(twoFingerScroll:)];
+        _twoFingerScrollRecognizer.minimumNumberOfTouches = 2;
+        _twoFingerScrollRecognizer.maximumNumberOfTouches = 2;
+        _twoFingerScrollRecognizer.cancelsTouchesInView = NO;
+        _twoFingerScrollRecognizer.delegate = self;
+        [_scrollView addGestureRecognizer:_twoFingerScrollRecognizer];
+
+        if ([HostProfile targetTypeForHost:_streamConfig.hostUuid] == TPTargetPhone) {
+            _phoneHomeRecognizer = [[UIScreenEdgePanGestureRecognizer alloc] initWithTarget:self action:@selector(phoneBottomEdgeSwiped:)];
+            _phoneHomeRecognizer.edges = UIRectEdgeBottom;
+            _phoneHomeRecognizer.delegate = self;
+            [self.view addGestureRecognizer:_phoneHomeRecognizer];
+        }
+#endif
     }
     else {
         // Add StreamView directly in relative mode
@@ -427,6 +448,65 @@ enum { kMicFrameBytes = 640 };              // 20 ms of 16 kHz mono s16
 - (UIView *)viewForZoomingInScrollView:(UIScrollView *)scrollView {
     return _streamView;
 }
+
+#if !TARGET_OS_TV
+- (void)scrollViewDidZoom:(UIScrollView *)scrollView {
+    // Two fingers pan the picture only while it is zoomed in; at 1x they scroll the host
+    scrollView.scrollEnabled = scrollView.zoomScale > 1.01;
+}
+
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other {
+    // Pinch-to-zoom keeps working alongside the two-finger scroll
+    return gestureRecognizer == _twoFingerScrollRecognizer || other == _twoFingerScrollRecognizer;
+}
+
+- (void)twoFingerScroll:(UIPanGestureRecognizer *)gesture {
+    if (gesture.state == UIGestureRecognizerStateBegan) {
+        _lastTwoFingerTranslation = CGPointZero;
+        // Scrolling acts on whatever is under the pointer, so put it between the two fingers
+        // (a phone ignores the wheel unless the pointer is over something scrollable).
+        if (_scrollView.zoomScale <= 1.01) {
+            [_streamView updateCursorLocation:[gesture locationInView:_streamView] isMouse:NO];
+        }
+        return;
+    }
+    if (gesture.state != UIGestureRecognizerStateChanged || _scrollView.zoomScale > 1.01) {
+        return;
+    }
+    // Same scale as a trackpad's continuous scroll (StreamView mouseWheelMovedContinuous):
+    // a full screen height of travel is 20 notches. Fingers drag the content, as on iOS.
+    CGPoint t = [gesture translationInView:self.view];
+    const CGFloat notch = 120 * 20;
+    short dy = (short)((t.y - _lastTwoFingerTranslation.y) / self.view.bounds.size.height * notch);
+    short dx = (short)((t.x - _lastTwoFingerTranslation.x) / self.view.bounds.size.width * notch);
+    if (dy != 0) {
+        LiSendHighResScrollEvent(dy);
+        _lastTwoFingerTranslation.y = t.y;
+    }
+    if (dx != 0) {
+        LiSendHighResHScrollEvent(-dx);
+        _lastTwoFingerTranslation.x = t.x;
+    }
+}
+
+/// Swipe up from the bottom edge on a phone host: a quick flick goes home (F13), a swipe that
+/// pauses before letting go opens the app switcher (F14), as on the phone itself. The gateway
+/// bridge turns F13/F14 into the phone action (see ios_bridge phone_keys).
+- (void)phoneBottomEdgeSwiped:(UIScreenEdgePanGestureRecognizer *)gesture {
+    if (gesture.state != UIGestureRecognizerStateEnded) {
+        return;
+    }
+    CGPoint t = [gesture translationInView:self.view];
+    CGPoint v = [gesture velocityInView:self.view];
+    if (t.y > -40) {
+        return;   // barely moved: not a swipe
+    }
+    short key = fabs(v.y) < 300 ? 0x7D /* F14: app switcher */ : 0x7C /* F13: home */;
+    LiSendKeyboardEvent(key, KEY_ACTION_DOWN, 0);
+    LiSendKeyboardEvent(key, KEY_ACTION_UP, 0);
+    Log(LOG_I, @"Phone bottom-edge swipe: %s", key == 0x7C ? "home" : "app switcher");
+}
+#endif
 
 - (void)willMoveToParentViewController:(UIViewController *)parent {
     // Only cleanup when we're being destroyed
