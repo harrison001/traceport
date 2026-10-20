@@ -19,7 +19,22 @@
 extern int ff_isom_write_av1c(AVIOContext *pb, const uint8_t *buf, int size,
                               int write_seq_header);
 
+#if !TARGET_OS_TV
+#import <AVKit/AVKit.h>
+#endif
+
+NSString *const VideoDecoderRendererPictureInPictureClosedNotification = @"VideoDecoderRendererPictureInPictureClosed";
+
+/// The renderer on screen; there is one stream at a time.
+static __weak VideoDecoderRenderer *sCurrentRenderer;
+
+#if !TARGET_OS_TV
+@interface VideoDecoderRenderer () <AVPictureInPictureControllerDelegate, AVPictureInPictureSampleBufferPlaybackDelegate>
+@end
+#endif
+
 @implementation VideoDecoderRenderer {
+    id _pictureInPicture;   // AVPictureInPictureController (iOS 15+), typed loosely for older SDK checks
     StreamView* _view;
     id<ConnectionCallbacks> _callbacks;
     float _streamAspectRatio;
@@ -75,7 +90,111 @@ extern int ff_isom_write_av1c(AVIOContext *pb, const uint8_t *buf, int size,
         CFRelease(formatDesc);
         formatDesc = nil;
     }
+
+    [self attachPictureInPicture];
 }
+
+#pragma mark - Picture in Picture
+
+- (void)attachPictureInPicture
+{
+#if !TARGET_OS_TV
+    if (@available(iOS 15.0, *)) {
+        if (![AVPictureInPictureController isPictureInPictureSupported]) {
+            return;
+        }
+        AVPictureInPictureControllerContentSource *source =
+            [[AVPictureInPictureControllerContentSource alloc] initWithSampleBufferDisplayLayer:displayLayer
+                                                                               playbackDelegate:self];
+        AVPictureInPictureController *pip = _pictureInPicture;
+        if (pip != nil) {
+            // The layer is rebuilt on resize; point the same controller at the new one
+            pip.contentSource = source;
+        }
+        else {
+            pip = [[AVPictureInPictureController alloc] initWithContentSource:source];
+            pip.delegate = self;
+            // Going to the Home Screen or another app shrinks the stream instead of ending it
+            pip.canStartPictureInPictureAutomaticallyFromInline = YES;
+            _pictureInPicture = pip;
+        }
+        sCurrentRenderer = self;
+    }
+#endif
+}
+
++ (BOOL)pictureInPicturePossible
+{
+#if !TARGET_OS_TV
+    if (@available(iOS 15.0, *)) {
+        VideoDecoderRenderer *current = sCurrentRenderer;   // ivar access through nil would crash
+        AVPictureInPictureController *pip = current != nil ? current->_pictureInPicture : nil;
+        return pip != nil && pip.isPictureInPicturePossible;
+    }
+#endif
+    return NO;
+}
+
++ (BOOL)pictureInPictureActive
+{
+#if !TARGET_OS_TV
+    if (@available(iOS 15.0, *)) {
+        VideoDecoderRenderer *current = sCurrentRenderer;   // ivar access through nil would crash
+        AVPictureInPictureController *pip = current != nil ? current->_pictureInPicture : nil;
+        return pip != nil && pip.isPictureInPictureActive;
+    }
+#endif
+    return NO;
+}
+
++ (void)stopPictureInPicture
+{
+#if !TARGET_OS_TV
+    if (@available(iOS 15.0, *)) {
+        VideoDecoderRenderer *current = sCurrentRenderer;   // ivar access through nil would crash
+        AVPictureInPictureController *pip = current != nil ? current->_pictureInPicture : nil;
+        if (pip.isPictureInPictureActive) {
+            [pip stopPictureInPicture];
+        }
+    }
+#endif
+}
+
+#if !TARGET_OS_TV
+// A live stream: no timeline to scrub, never paused, nothing to skip.
+- (void)pictureInPictureController:(AVPictureInPictureController *)controller setPlaying:(BOOL)playing API_AVAILABLE(ios(15.0)) {}
+
+- (CMTimeRange)pictureInPictureControllerTimeRangeForPlayback:(AVPictureInPictureController *)controller API_AVAILABLE(ios(15.0)) {
+    return CMTimeRangeMake(kCMTimeNegativeInfinity, kCMTimePositiveInfinity);
+}
+
+- (BOOL)pictureInPictureControllerIsPlaybackPaused:(AVPictureInPictureController *)controller API_AVAILABLE(ios(15.0)) {
+    return NO;
+}
+
+- (void)pictureInPictureController:(AVPictureInPictureController *)controller didTransitionToRenderSize:(CMVideoDimensions)newRenderSize API_AVAILABLE(ios(15.0)) {}
+
+- (void)pictureInPictureController:(AVPictureInPictureController *)controller skipByInterval:(CMTime)skipInterval completionHandler:(void (^)(void))completionHandler API_AVAILABLE(ios(15.0)) {
+    completionHandler();
+}
+
+- (void)pictureInPictureController:(AVPictureInPictureController *)controller restoreUserInterfaceForPictureInPictureStopWithCompletionHandler:(void (^)(BOOL))completionHandler {
+    // The stream view never went away; it is ready the moment the app is
+    completionHandler(YES);
+}
+
+- (void)pictureInPictureControllerDidStartPictureInPicture:(AVPictureInPictureController *)controller {
+    Log(LOG_I, @"Picture in Picture started; keeping the stream");
+}
+
+- (void)pictureInPictureControllerDidStopPictureInPicture:(AVPictureInPictureController *)controller {
+    Log(LOG_I, @"Picture in Picture stopped");
+    if ([UIApplication sharedApplication].applicationState != UIApplicationStateActive) {
+        // Closed with the ✕ while in another app: the user is done with this stream
+        [[NSNotificationCenter defaultCenter] postNotificationName:VideoDecoderRendererPictureInPictureClosedNotification object:nil];
+    }
+}
+#endif
 
 - (id)initWithView:(StreamView*)view callbacks:(id<ConnectionCallbacks>)callbacks streamAspectRatio:(float)aspectRatio useFramePacing:(BOOL)useFramePacing
 {
@@ -143,6 +262,17 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
 - (void)stop
 {
     [_displayLink invalidate];
+#if !TARGET_OS_TV
+    if (@available(iOS 15.0, *)) {
+        AVPictureInPictureController *pip = _pictureInPicture;
+        if (pip.isPictureInPictureActive) {
+            [pip stopPictureInPicture];
+        }
+    }
+#endif
+    if (sCurrentRenderer == self) {
+        sCurrentRenderer = nil;
+    }
 }
 
 #define NALU_START_PREFIX_SIZE 3

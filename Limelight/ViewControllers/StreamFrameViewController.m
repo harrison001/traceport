@@ -379,6 +379,10 @@ enum { kMicFrameBytes = 640 };              // 20 ms of 16 kHz mono s16
                                                  name: UIApplicationDidBecomeActiveNotification
                                                object: nil];
     
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(pictureInPictureClosed:)
+                                                 name:VideoDecoderRendererPictureInPictureClosedNotification
+                                               object:nil];
     [[NSNotificationCenter defaultCenter] addObserver: self
                                              selector: @selector(applicationDidEnterBackground:)
                                                  name: UIApplicationDidEnterBackgroundNotification
@@ -616,6 +620,11 @@ enum { kMicFrameBytes = 640 };              // 20 ms of 16 kHz mono s16
     if (_inactivityTimer != nil) {
         [_inactivityTimer invalidate];
     }
+    if ([VideoDecoderRenderer pictureInPicturePossible] || [VideoDecoderRenderer pictureInPictureActive]) {
+        // Leaving for another app shrinks the stream into Picture in Picture; nothing to end
+        _inactivityTimer = nil;
+        return;
+    }
     
 #if !TARGET_OS_TV
     // Terminate the stream if the app is inactive for 60 seconds
@@ -637,6 +646,9 @@ enum { kMicFrameBytes = 640 };              // 20 ms of 16 kHz mono s16
 }
 
 - (void)applicationDidBecomeActive:(NSNotification *)notification {
+    // Back in the app: the stream goes full screen again
+    [VideoDecoderRenderer stopPictureInPicture];
+
     // Stop the background timer, since we're foregrounded again
     if (_inactivityTimer != nil) {
         Log(LOG_I, @"Stopping inactivity timer after becoming active again");
@@ -647,6 +659,11 @@ enum { kMicFrameBytes = 640 };              // 20 ms of 16 kHz mono s16
 
 // This fires when the home button is pressed
 - (void)applicationDidEnterBackground:(UIApplication *)application {
+    if ([VideoDecoderRenderer pictureInPicturePossible] || [VideoDecoderRenderer pictureInPictureActive]) {
+        // Picture in Picture keeps the stream (and the connection) going while the app is away
+        Log(LOG_I, @"Backgrounded with Picture in Picture; keeping the stream");
+        return;
+    }
     Log(LOG_I, @"Terminating stream immediately for backgrounding");
 
     if (_inactivityTimer != nil) {
@@ -654,6 +671,11 @@ enum { kMicFrameBytes = 640 };              // 20 ms of 16 kHz mono s16
         _inactivityTimer = nil;
     }
     
+    [self returnToMainFrame];
+}
+
+- (void)pictureInPictureClosed:(NSNotification *)notification {
+    Log(LOG_I, @"Picture in Picture closed while away; ending the stream");
     [self returnToMainFrame];
 }
 
