@@ -32,6 +32,12 @@
 
 #if !TARGET_OS_TV
 - (void) updateCursorLocation:(CGPoint)location isMouse:(BOOL)isMouse;
+
+/// Brings this device's keyboard up for typing into the host, or puts it away. What three
+/// fingers do, for hosts that have a key for it.
+- (void) toggleTextInput;
+/// Brings it up if it is not already: something on the host is now waiting for text.
+- (void) showTextInput;
 #endif
 
 @end

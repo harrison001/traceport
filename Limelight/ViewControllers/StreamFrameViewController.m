@@ -12,6 +12,7 @@
 #import "StreamManager.h"
 #import "ControllerSupport.h"
 #import "DataManager.h"
+#import "PhoneDockView.h"
 
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -241,6 +242,7 @@ enum { kMicFrameBytes = 640 };              // 20 ms of 16 kHz mono s16
     UIScreenEdgePanGestureRecognizer *_phoneHomeRecognizer;  // phone host: swipe up from the bottom edge
     TPMicUplink *_micUplink;
     UIButton *_micButton;
+    PhoneDockView *_phoneDock API_AVAILABLE(ios(15.0));  // phone host: its buttons, below the picture
 #endif
 }
 
@@ -319,7 +321,24 @@ enum { kMicFrameBytes = 640 };              // 20 ms of 16 kHz mono s16
     _controllerSupport = [[ControllerSupport alloc] initWithConfig:self.streamConfig delegate:self];
     _inactivityTimer = nil;
     
-    _streamView = [[StreamView alloc] initWithFrame:self.view.frame];
+    // A phone host gets its buttons in a dock along the bottom, and the picture is laid out in
+    // what is left above it so nothing covers it. The renderer and the touch map both measure the
+    // stream view, so making that view shorter is all either needs.
+    CGRect streamFrame = self.view.frame;
+#if !TARGET_OS_TV
+    if (@available(iOS 15.0, *)) {
+        if ([HostProfile targetTypeForHost:_streamConfig.hostUuid] == TPTargetPhone) {
+            UIWindow *window = UIApplication.sharedApplication.windows.firstObject;
+            CGFloat dockHeight = [PhoneDockView contentHeight] + window.safeAreaInsets.bottom;
+            streamFrame.size.height -= dockHeight;
+            _phoneDock = [[PhoneDockView alloc] initWithFrame:CGRectMake(0, CGRectGetMaxY(streamFrame),
+                                                                         self.view.frame.size.width,
+                                                                         dockHeight)];
+            _phoneDock.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleTopMargin;
+        }
+    }
+#endif
+    _streamView = [[StreamView alloc] initWithFrame:streamFrame];
     [_streamView setupStreamView:_controllerSupport interactionDelegate:self config:self.streamConfig];
     
 #if TARGET_OS_TV
@@ -404,7 +423,7 @@ enum { kMicFrameBytes = 640 };              // 20 ms of 16 kHz mono s16
     
     // Only enable scroll and zoom in absolute touch mode
     if (_settings.absoluteTouchMode) {
-        _scrollView = [[UIScrollView alloc] initWithFrame:self.view.frame];
+        _scrollView = [[UIScrollView alloc] initWithFrame:streamFrame];
         // Don't let UIKit pad the content by the safe area: the stream view is laid out against the
         // full screen, so the automatic top inset (Dynamic Island) pushed a portrait stream down and
         // cut off its bottom edge in touchscreen mode.
@@ -444,6 +463,16 @@ enum { kMicFrameBytes = 640 };              // 20 ms of 16 kHz mono s16
         [self.view addSubview:_streamView];
     }
     
+#if !TARGET_OS_TV
+    if (@available(iOS 15.0, *)) {
+        if (_phoneDock != nil) {
+            __weak StreamView *streamView = _streamView;
+            _phoneDock.toggleKeyboard = ^{ [streamView toggleTextInput]; };
+            _phoneDock.showKeyboard = ^{ [streamView showTextInput]; };
+            [self.view addSubview:_phoneDock];
+        }
+    }
+#endif
     [self.view addSubview:_stageLabel];
     [self.view addSubview:_spinner];
     [self.view addSubview:_tipLabel];

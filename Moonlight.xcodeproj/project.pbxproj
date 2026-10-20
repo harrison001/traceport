@@ -10,6 +10,7 @@
 		693B3A9B218638CD00982F7B /* Settings.bundle in Resources */ = {isa = PBXBuildFile; fileRef = 693B3A9A218638CD00982F7B /* Settings.bundle */; };
 		7F22C0BCAF1BAFD052B36BD2 /* CaretTracker.m in Sources */ = {isa = PBXBuildFile; fileRef = 05DB5ED275F9C5CFAB2A3850 /* CaretTracker.m */; };
 		8A810E643AAA4BB667814C97 /* KeyBarView.m in Sources */ = {isa = PBXBuildFile; fileRef = 1CBB14A382C13FBE3EB6BAFA /* KeyBarView.m */; };
+		A1D0C4E1F00D0DC000000001 /* PhoneDockView.m in Sources */ = {isa = PBXBuildFile; fileRef = A1D0C4E1F00D0DC000000002 /* PhoneDockView.m */; };
 		8C1C2F47B25D2F08327D9407 /* KeyMacros.m in Sources */ = {isa = PBXBuildFile; fileRef = 98BB0AED7C0BE13E32118D6B /* KeyMacros.m */; };
 		98181BE92791277400E43572 /* libSDL2.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 98181BE82791275D00E43572 /* libSDL2.a */; };
 		98181BEB2791278F00E43572 /* libSDL2.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 98181BEA2791278300E43572 /* libSDL2.a */; };
@@ -176,6 +177,8 @@
 /* Begin PBXFileReference section */
 		05DB5ED275F9C5CFAB2A3850 /* CaretTracker.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = CaretTracker.m; sourceTree = "<group>"; };
 		1CBB14A382C13FBE3EB6BAFA /* KeyBarView.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = KeyBarView.m; sourceTree = "<group>"; };
+		A1D0C4E1F00D0DC000000002 /* PhoneDockView.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = PhoneDockView.m; sourceTree = "<group>"; };
+		A1D0C4E1F00D0DC000000003 /* PhoneDockView.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; path = PhoneDockView.h; sourceTree = "<group>"; };
 		3BF8218FAB4FFC05FB67044D /* KeyBarView.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; path = KeyBarView.h; sourceTree = "<group>"; };
 		40DCB55775D6F48CE81CF797 /* CaretTracker.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; path = CaretTracker.h; sourceTree = "<group>"; };
 		566E9D2B2770B23A00EF7BFE /* Moonlight v1.7.xcdatamodel */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcdatamodel; path = "Moonlight v1.7.xcdatamodel"; sourceTree = "<group>"; };
@@ -535,6 +538,8 @@
 				988FCD40293B091B003050E2 /* KeyboardInputField.m */,
 				3BF8218FAB4FFC05FB67044D /* KeyBarView.h */,
 				1CBB14A382C13FBE3EB6BAFA /* KeyBarView.m */,
+				A1D0C4E1F00D0DC000000003 /* PhoneDockView.h */,
+				A1D0C4E1F00D0DC000000002 /* PhoneDockView.m */,
 				C72ADA47AB29077F70C215CF /* KeyMacros.h */,
 				98BB0AED7C0BE13E32118D6B /* KeyMacros.m */,
 				40DCB55775D6F48CE81CF797 /* CaretTracker.h */,
@@ -957,6 +962,7 @@
 				FB89463119F646E200339C8A /* StreamManager.m in Sources */,
 				988FCD41293B091B003050E2 /* KeyboardInputField.m in Sources */,
 				8A810E643AAA4BB667814C97 /* KeyBarView.m in Sources */,
+				A1D0C4E1F00D0DC000000001 /* PhoneDockView.m in Sources */,
 				8C1C2F47B25D2F08327D9407 /* KeyMacros.m in Sources */,
 				7F22C0BCAF1BAFD052B36BD2 /* CaretTracker.m in Sources */,
 			);

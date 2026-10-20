@@ -203,7 +203,30 @@ static NSString *KeyHiddenDefaultsKey(NSString *profileKey) {
 }
 
 + (NSArray<KeyGroup *> *)keyboardGroupsForHost:(KeyMacroHost)host {
-    // A phone takes Apple's modifiers too: iOS reads ⌘ and ⌥ from a hardware keyboard
+    if (host == KeyMacroHostPhone) {
+        // A phone gets only what its own on-screen keyboard lacks and iOS actually reads from a
+        // hardware keyboard. Shift, return, delete, space and the digits are on the system
+        // keyboard right below; Home/End, paging, Ins/Pause/Break and F1–F12 mean nothing to a
+        // phone. Its own actions (Home, Apps, Back...) live on the pad.
+        return @[
+            [KeyGroup groupWithItems:@[
+                // ⌘C, ⌘V and the like: the system keyboard has no ⌘
+                [KeyItem modifier:@"⌘" code:0x5B flag:UIKeyModifierCommand],
+            ]],
+            [KeyGroup groupWithItems:@[
+                [[KeyItem key:@"esc" code:0x1B] explained:@"Dismiss an alert or the keyboard"],
+                [[KeyItem key:@"tab" code:0x09] explained:@"Next field"],
+            ]],
+            // Moving the text cursor, which on the phone itself takes a long press and a drag
+            [KeyGroup groupWithItems:@[
+                [KeyItem key:@"←" code:0x25],
+                [KeyItem key:@"↓" code:0x28],
+                [KeyItem key:@"↑" code:0x26],
+                [KeyItem key:@"→" code:0x27],
+            ]],
+        ];
+    }
+    // A Mac's modifiers are named the Apple way; everything else gets the PC names
     BOOL mac = host != KeyMacroHostWindows;
     return @[
         // Leftmost, so their position never moves. Tapping once arms one for the next key,

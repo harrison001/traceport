@@ -56,6 +56,9 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     NSData* hostServerCert;
     /// The app launched on the host, which gives each app its own bar customisations.
     NSString* streamedAppName;
+    /// The host is a phone: its own buttons live in the dock, so the keyboard here is only for
+    /// typing and there is no pad.
+    BOOL phoneHost;
 #endif
     
     float streamAspectRatio;
@@ -94,6 +97,7 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     self->hostHttpsPort = streamConfig.httpsPort;
     self->hostServerCert = streamConfig.serverCert;
     self->streamedAppName = streamConfig.appName;
+    self->phoneHost = [HostProfile targetTypeForHost:streamConfig.hostUuid] == TPTargetPhone;
 #endif
     
     TemporarySettings* settings = [[[DataManager alloc] init] getSettingsForHost:streamConfig.hostUuid];
@@ -397,38 +401,50 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
         [touchHandler touchesBegan:touches withEvent:event];
         
         if ([[event allTouches] count] == 3) {
-            if (isInputingText) {
-                Log(LOG_D, @"Closing the keyboard");
-#if !TARGET_OS_TV
-                [self dismissKeyBar];
-#else
-                [keyInputField resignFirstResponder];
-#endif
-                isInputingText = false;
-            } else {
-                Log(LOG_D, @"Opening the keyboard");
-                // Prepare the textbox used to capture keyboard events.
-                keyInputField.delegate = self;
-                keyInputField.text = @"0";
-#if !TARGET_OS_TV
-                [self createKeyBars];
-
-                // With a hardware keyboard attached there is nothing to type on screen, and
-                // the system keyboard would cover half the picture for no reason. Start
-                // without it, as Jump Desktop and RealVNC do — but this is only the starting
-                // point now; the bar carries a key to change it either way.
-                [self presentKeyBarWithSystemKeyboard:![self hasHardwareKeyboard]];
-#else
-                [keyInputField becomeFirstResponder];
-#endif
-                [keyInputField addTarget:self action:@selector(onKeyboardPressed:) forControlEvents:UIControlEventEditingChanged];
-                
-                // Undo causes issues for our state management, so turn it off
-                [keyInputField.undoManager disableUndoRegistration];
-                
-                isInputingText = true;
-            }
+            [self toggleTextInput];
         }
+    }
+}
+
+- (void)toggleTextInput {
+    if (isInputingText) {
+        Log(LOG_D, @"Closing the keyboard");
+#if !TARGET_OS_TV
+        [self dismissKeyBar];
+#else
+        [keyInputField resignFirstResponder];
+#endif
+        isInputingText = false;
+        return;
+    }
+
+    Log(LOG_D, @"Opening the keyboard");
+    // Prepare the textbox used to capture keyboard events.
+    keyInputField.delegate = self;
+    keyInputField.text = @"0";
+#if !TARGET_OS_TV
+    [self createKeyBars];
+
+    // With a hardware keyboard attached there is nothing to type on screen, and
+    // the system keyboard would cover half the picture for no reason. Start
+    // without it, as Jump Desktop and RealVNC do — but this is only the starting
+    // point now; the bar carries a key to change it either way. A phone host is only
+    // ever asked for the keyboard in order to type, so it gets it regardless.
+    [self presentKeyBarWithSystemKeyboard:phoneHost || ![self hasHardwareKeyboard]];
+#else
+    [keyInputField becomeFirstResponder];
+#endif
+    [keyInputField addTarget:self action:@selector(onKeyboardPressed:) forControlEvents:UIControlEventEditingChanged];
+
+    // Undo causes issues for our state management, so turn it off
+    [keyInputField.undoManager disableUndoRegistration];
+
+    isInputingText = true;
+}
+
+- (void)showTextInput {
+    if (!isInputingText) {
+        [self toggleTextInput];
     }
 }
 
@@ -444,7 +460,7 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
 
 /// Builds both layers: the keyboard, and the pad if this screen has a letterbox to put it in.
 - (void)createKeyBars {
-    if ([self keyBarMarginWidth] > 0) {
+    if (!phoneHost && [self keyBarMarginWidth] > 0) {
         macroPad = [[KeyBarView alloc] initWithFrame:self.bounds
                                              hostKey:hostIdentity
                                       legacyHostKeys:hostAddresses
@@ -463,8 +479,8 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
                                        hostKey:hostIdentity
                                 legacyHostKeys:hostAddresses
                                        appName:streamedAppName
-                                       content:macroPad != nil ? KeyBarContentKeyboard
-                                                               : KeyBarContentBoth];
+                                       content:macroPad != nil || phoneHost ? KeyBarContentKeyboard
+                                                                            : KeyBarContentBoth];
     keyBar.delegate = self;
     keyBar.padDelegate = self;
 }
@@ -698,6 +714,11 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
 }
 
 - (void)keyBarDidToggleSystemKeyboard:(KeyBarView *)bar {
+    if (phoneHost) {
+        // The dock is along the bottom already; a line pinned over it would only cover it.
+        [self dismissKeyBar];
+        return;
+    }
     if (keyBar == nil) {
         // Pressed on the pad after the keyboard was dismissed: bring the whole layer back.
         [self createKeyboardBar];
