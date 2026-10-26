@@ -59,6 +59,15 @@ static const unsigned short actionPortOffset = 200;
     [self send:request completion:completion];
 }
 
+- (void)touch:(NSArray<NSArray<NSNumber *> *> *)points completion:(void (^)(NSDictionary *_Nullable))completion {
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:
+                                    [NSURL URLWithString:[_base stringByAppendingString:@"/phone/touch"]]];
+    request.HTTPMethod = @"POST";
+    [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
+    request.HTTPBody = [NSJSONSerialization dataWithJSONObject:@{@"points": points} options:0 error:nil];
+    [self send:request completion:completion];
+}
+
 - (void)fetchStatus:(void (^)(NSDictionary *_Nullable))completion {
     NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:
                                     [NSURL URLWithString:[_base stringByAppendingString:@"/phone/status"]]];

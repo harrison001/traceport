@@ -13,6 +13,7 @@
 #import "ControllerSupport.h"
 #import "DataManager.h"
 #import "PhoneDockView.h"
+#import "PhoneTouchHandler.h"
 
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -243,6 +244,9 @@ enum { kMicFrameBytes = 640 };              // 20 ms of 16 kHz mono s16
     TPMicUplink *_micUplink;
     UIButton *_micButton;
     PhoneDockView *_phoneDock API_AVAILABLE(ios(15.0));  // phone host: its buttons, below the picture
+    PhoneTouchHandler *_phoneTouch;                      // phone host: real touch, when it is on
+    BOOL _realTouchWanted;                               // the switch, remembered per host
+    BOOL _gatewayTouches;                                // the gateway says it can replay touches now
     PhoneActionClient *_phoneClient;                     // phone host: asks the gateway to do the dock's actions
     NSTimer *_phoneStatusTimer;                          // and, every few seconds, what it can do right now
 #endif
@@ -331,11 +335,17 @@ enum { kMicFrameBytes = 640 };              // 20 ms of 16 kHz mono s16
     if (@available(iOS 15.0, *)) {
         if ([HostProfile targetTypeForHost:_streamConfig.hostUuid] == TPTargetPhone) {
             UIWindow *window = UIApplication.sharedApplication.windows.firstObject;
-            CGFloat dockHeight = [PhoneDockView contentHeight] + window.safeAreaInsets.bottom;
+            // The dock's size is settled here, before the picture is laid out: the renderer sizes
+            // its layer once, so the picture cannot be resized under a running stream. Real touch
+            // gets one row; a switch made mid-stream changes the touches straight away and the
+            // dock at the next connection.
+            _realTouchWanted = [self realTouchPreference];
+            CGFloat dockHeight = [PhoneDockView contentHeightCompact:_realTouchWanted] + window.safeAreaInsets.bottom;
             streamFrame.size.height -= dockHeight;
             _phoneDock = [[PhoneDockView alloc] initWithFrame:CGRectMake(0, CGRectGetMaxY(streamFrame),
                                                                          self.view.frame.size.width,
-                                                                         dockHeight)];
+                                                                         dockHeight)
+                                                      compact:_realTouchWanted];
             _phoneDock.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleTopMargin;
         }
     }
@@ -475,6 +485,7 @@ enum { kMicFrameBytes = 640 };              // 20 ms of 16 kHz mono s16
                                                          httpsPort:_streamConfig.httpsPort
                                                         serverCert:_streamConfig.serverCert];
             _phoneDock.client = _phoneClient;
+            [self setUpRealTouch];
             [self.view addSubview:_phoneDock];
             [self startPhoneStatus];
         }
@@ -549,6 +560,70 @@ enum { kMicFrameBytes = 640 };              // 20 ms of 16 kHz mono s16
 #endif
 
 #if !TARGET_OS_TV
+- (NSString *)realTouchKey {
+    return [@"TracePort.realTouch." stringByAppendingString:_streamConfig.hostUuid ?: _streamConfig.host];
+}
+
+/// On unless turned off: it is the way that does not miss.
+- (BOOL)realTouchPreference {
+    id saved = [[NSUserDefaults standardUserDefaults] objectForKey:[self realTouchKey]];
+    return saved == nil ? YES : [saved boolValue];
+}
+
+- (void)setUpRealTouch API_AVAILABLE(ios(15.0)) {
+    _phoneTouch = [[PhoneTouchHandler alloc] initWithView:_streamView client:_phoneClient];
+    __weak StreamFrameViewController *weakSelf = self;
+    _phoneTouch.onResult = ^(NSDictionary *result) {
+        StreamFrameViewController *strongSelf = weakSelf;
+        if (strongSelf == nil) {
+            return;
+        }
+        if (result == nil) {
+            [strongSelf->_phoneDock showToast:@"✗ Touch did not reach the gateway" ok:NO];
+            return;
+        }
+        if ([result[@"ok"] boolValue]) {
+            return;   // the phone moving is the answer
+        }
+        NSString *why = [result[@"error"] isKindOfClass:[NSString class]] ? result[@"error"] : @"";
+        if ([result[@"fallback"] boolValue]) {
+            // WebDriverAgent went away under us: the pointer still works, so use it until it is back
+            [strongSelf gatewayTouchesAvailable:NO];
+        }
+        [strongSelf->_phoneDock showToast:[@"✗ Touch  " stringByAppendingString:why] ok:NO];
+    };
+    _phoneDock.realTouch = _realTouchWanted;
+    _phoneDock.realTouchChanged = ^(BOOL on) {
+        StreamFrameViewController *strongSelf = weakSelf;
+        if (strongSelf == nil) {
+            return;
+        }
+        strongSelf->_realTouchWanted = on;
+        [[NSUserDefaults standardUserDefaults] setBool:on forKey:[strongSelf realTouchKey]];
+        [strongSelf applyTouchRouting];
+        NSString *what = on ? (strongSelf->_gatewayTouches ? @"Real touch on" : @"Real touch on — waiting for WebDriverAgent, pointer until then")
+                            : @"Pointer on";
+        [strongSelf->_phoneDock showToast:what ok:YES];
+    };
+    [self applyTouchRouting];
+}
+
+- (void)gatewayTouchesAvailable:(BOOL)available API_AVAILABLE(ios(15.0)) {
+    if (available == _gatewayTouches) {
+        return;
+    }
+    _gatewayTouches = available;
+    [self applyTouchRouting];
+    if (_realTouchWanted) {
+        [_phoneDock showToast:available ? @"Real touch ready" : @"Real touch paused — WebDriverAgent is down, using the pointer"
+                           ok:available];
+    }
+}
+
+- (void)applyTouchRouting API_AVAILABLE(ios(15.0)) {
+    _streamView.realTouchHandler = (_realTouchWanted && _gatewayTouches) ? _phoneTouch : nil;
+}
+
 /// Greys out the dock keys that need WebDriverAgent while the gateway says it is down. A gateway
 /// that does not answer leaves the keys as they are: it may simply predate the action port.
 - (void)startPhoneStatus API_AVAILABLE(ios(15.0)) {
@@ -566,6 +641,7 @@ enum { kMicFrameBytes = 640 };              // 20 ms of 16 kHz mono s16
             NSArray *wdaOnly = [status[@"wda_only"] isKindOfClass:[NSArray class]] ? status[@"wda_only"] : @[];
             BOOL wda = [status[@"wda"] boolValue];
             [again->_phoneDock setUnavailableActions:wda ? [NSSet set] : [NSSet setWithArray:wdaOnly]];
+            [again gatewayTouchesAvailable:wda && [status[@"touch"] boolValue]];
         }];
     };
     refresh();

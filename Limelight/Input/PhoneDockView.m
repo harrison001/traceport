@@ -32,21 +32,66 @@ static const NSInteger columns = 6;
     NSMutableDictionary<NSString *, UIButton *> *_keys;
     UILabel *_toast;
     NSUInteger _toastGeneration;
+    BOOL _compact;
+    UIButton *_more;
+    UIButton *_touchKey;     // compact: the real-touch switch
 }
 
-+ (CGFloat)contentHeight {
-    return rowHeight * 2 + 8;
++ (CGFloat)contentHeightCompact:(BOOL)compact {
+    return rowHeight * (compact ? 1 : 2) + 8;
 }
 
 - (instancetype)initWithFrame:(CGRect)frame {
+    return [self initWithFrame:frame compact:NO];
+}
+
+- (instancetype)initWithFrame:(CGRect)frame compact:(BOOL)compact {
     self = [super initWithFrame:frame];
     if (self == nil) {
         return nil;
     }
     self.backgroundColor = [UIColor colorWithWhite:0.08 alpha:1];
     _keys = [NSMutableDictionary dictionary];
+    _compact = compact;
 
     __weak PhoneDockView *weakSelf = self;
+    if (compact) {
+        // With real touch the phone's own gestures do Home (swipe up), the switcher (swipe up and
+        // hold), Back (from the left edge), Control Centre and alerts (down from the top corners)
+        // and Search (down from the middle). What is left needs a key: typing fast, and the switch.
+        _touchKey = [self key:@"Real Touch" symbol:@"hand.tap" handler:^{
+            PhoneDockView *strongSelf = weakSelf;
+            if (strongSelf == nil) {
+                return;
+            }
+            strongSelf.realTouch = !strongSelf.realTouch;
+            if (strongSelf.realTouchChanged) {
+                strongSelf.realTouchChanged(strongSelf.realTouch);
+            }
+        }];
+        NSArray<UIButton *> *only = @[
+            [self key:@"Type" symbol:@"keyboard" handler:^{
+                if (weakSelf.toggleKeyboard) {
+                    weakSelf.toggleKeyboard();
+                }
+            }],
+            _touchKey,
+            [self moreKey],
+        ];
+        _rows = [[UIStackView alloc] initWithArrangedSubviews:@[[self row:only]]];
+        _rows.axis = UILayoutConstraintAxisVertical;
+        _rows.translatesAutoresizingMaskIntoConstraints = NO;
+        [self addSubview:_rows];
+        [NSLayoutConstraint activateConstraints:@[
+            [_rows.leadingAnchor constraintEqualToAnchor:self.safeAreaLayoutGuide.leadingAnchor constant:4],
+            [_rows.trailingAnchor constraintEqualToAnchor:self.safeAreaLayoutGuide.trailingAnchor constant:-4],
+            [_rows.topAnchor constraintEqualToAnchor:self.topAnchor constant:4],
+            [_rows.heightAnchor constraintEqualToConstant:rowHeight],
+        ]];
+        [self buildToast];
+        return self;
+    }
+
     // Most used first, under the thumb: going home, switching and going back is most of what
     // driving a phone is. Lock lives in the overflow — locking the phone remotely means typing
     // the passcode to get back in, which is not something to do by brushing a key.
@@ -134,7 +179,28 @@ static const NSInteger columns = 6;
 /// The rest: text editing, scrolling and Lock. Used often enough to keep, not often enough to
 /// spend a key on.
 - (UIButton *)moreKey {
-    UIButton *button = [self key:@"More" symbol:@"ellipsis" handler:^{}];
+    _more = [self key:@"More" symbol:@"ellipsis" handler:^{}];
+    _more.showsMenuAsPrimaryAction = YES;
+    [self rebuildMenu];
+    return _more;
+}
+
+- (void)setRealTouch:(BOOL)realTouch {
+    _realTouch = realTouch;
+    if (_touchKey != nil) {
+        UIButtonConfiguration *config = _touchKey.configuration;
+        config.title = realTouch ? @"Real Touch" : @"Pointer";
+        config.image = [UIImage systemImageNamed:realTouch ? @"hand.tap" : @"cursorarrow"
+                               withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:17]];
+        _touchKey.configuration = config;
+    }
+    if (_more != nil) {
+        [self rebuildMenu];
+    }
+}
+
+- (void)rebuildMenu {
+    UIButton *button = _more;
     __weak PhoneDockView *weakSelf = self;
     UIAction *(^chord)(NSString *, NSString *, short) = ^UIAction *(NSString *title, NSString *symbol, short key) {
         return [UIAction actionWithTitle:title image:[UIImage systemImageNamed:symbol] identifier:nil
@@ -161,9 +227,46 @@ static const NSInteger columns = 6;
         [weakSelf perform:@"lock" fallback:PhoneKeyLock];
     }];
     lock.attributes = UIMenuElementAttributesDestructive;
-    button.menu = [UIMenu menuWithChildren:@[text, scroll, lock]];
-    button.showsMenuAsPrimaryAction = YES;
-    return button;
+
+    UIAction *touch = [UIAction actionWithTitle:@"Real Touch" image:[UIImage systemImageNamed:@"hand.tap"]
+                                     identifier:nil handler:^(UIAction *a) {
+        PhoneDockView *strongSelf = weakSelf;
+        if (strongSelf == nil) {
+            return;
+        }
+        strongSelf.realTouch = !strongSelf.realTouch;
+        if (strongSelf.realTouchChanged) {
+            strongSelf.realTouchChanged(strongSelf.realTouch);
+        }
+    }];
+    touch.state = self.realTouch ? UIMenuElementStateOn : UIMenuElementStateOff;
+
+    NSMutableArray<UIMenuElement *> *children = [NSMutableArray array];
+    if (_compact) {
+        // The keys the full dock has, for when a gesture is not what is wanted (or the phone is
+        // being driven through the pointer while WebDriverAgent is down)
+        UIAction *(^act)(NSString *, NSString *, NSString *, PhoneKey) =
+            ^UIAction *(NSString *title, NSString *symbol, NSString *action, PhoneKey key) {
+            return [UIAction actionWithTitle:title image:[UIImage systemImageNamed:symbol] identifier:nil
+                                     handler:^(UIAction *a) { [weakSelf perform:action fallback:key]; }];
+        };
+        [children addObject:[UIMenu menuWithTitle:@"" image:nil identifier:nil
+                                          options:UIMenuOptionsDisplayInline children:@[
+            act(@"Home", @"house", @"home", PhoneKeyHome),
+            act(@"App Switcher", @"square.stack", @"apps", PhoneKeyApps),
+            act(@"Back", @"chevron.backward", @"back", PhoneKeyBack),
+            act(@"Close App", @"xmark.app", @"kill", PhoneKeyKill),
+            act(@"Control Centre", @"switch.2", @"cc", PhoneKeyControlCenter),
+            act(@"Notifications", @"bell", @"notif", PhoneKeyNotifications),
+            act(@"Search", @"magnifyingglass", @"search", PhoneKeySearch),
+            act(@"Screenshot", @"camera.viewfinder", @"shot", PhoneKeyScreenshot),
+        ]]];
+    } else {
+        [children addObject:[UIMenu menuWithTitle:@"" image:nil identifier:nil
+                                          options:UIMenuOptionsDisplayInline children:@[touch]]];
+    }
+    [children addObjectsFromArray:@[text, scroll, lock]];
+    button.menu = [UIMenu menuWithChildren:children];
 }
 
 #pragma mark - Doing it

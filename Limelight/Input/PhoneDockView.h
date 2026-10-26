@@ -9,9 +9,9 @@
 //  buttons — Home, the app switcher, Back — one tap away and never covering the picture. The
 //  picture is laid out above the dock rather than under it.
 //
-//  Text is not typed here. The phone being driven takes the gateway as a hardware keyboard, so
-//  its own on-screen keyboard stays hidden; typing goes through this device's keyboard, which the
-//  ⌨ key brings up only when it is wanted.
+//  Text: the phone shows its own keyboard when a field wants text, and with real touch its keys
+//  can be tapped like any other; for typing fast, this device's keyboard goes through the gateway as a
+//  hardware keyboard, brought up by the ⌨ key only when it is wanted.
 //
 
 #import <UIKit/UIKit.h>
@@ -30,8 +30,19 @@ API_AVAILABLE(ios(15.0))
 /// it is nil, or the gateway cannot be reached, the key is sent the old way, unconfirmed.
 @property (nonatomic, strong, nullable) PhoneActionClient *client;
 
-/// Height of the keys alone, without the home indicator's strip below them.
-+ (CGFloat)contentHeight;
+/// Height of the keys alone, without the home indicator's strip below them. Compact is the one
+/// row left when touches go to the phone as real touches: the phone's own gestures do the rest.
++ (CGFloat)contentHeightCompact:(BOOL)compact;
+
+- (instancetype)initWithFrame:(CGRect)frame compact:(BOOL)compact;
+
+/// Real touch: the stream's touches are replayed on the phone as touches, instead of steering its
+/// pointer. The dock shows the switch; the owner does the switching and remembers the choice.
+@property (nonatomic) BOOL realTouch;
+@property (nonatomic, copy, nullable) void (^realTouchChanged)(BOOL on);
+
+/// A line above the dock saying what just happened.
+- (void)showToast:(NSString *)text ok:(BOOL)ok;
 
 /// Greys out the keys for these actions — the ones that need WebDriverAgent, while it is down.
 /// They stay pressable: pressing one says why it cannot work, which beats a key that is simply dead.

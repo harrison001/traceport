@@ -30,8 +30,15 @@ NS_ASSUME_NONNULL_BEGIN
 /// back to the key.
 - (void)perform:(NSString *)action completion:(void (^)(NSDictionary *_Nullable result))completion;
 
+/// Replays one finger's gesture on the phone as a real touch. `points` are [x, y, ms]: x and y
+/// as fractions of the picture, ms since the finger went down. The gateway decides whether it was
+/// a tap, a long press, a swipe or one of the system's edge gestures. Main queue; nil when the
+/// gateway could not be reached.
+- (void)touch:(NSArray<NSArray<NSNumber *> *> *)points completion:(void (^)(NSDictionary *_Nullable result))completion;
+
 /// What the gateway can do right now: "wda" (whether the swipe-only actions will work) and
-/// "wda_only" (which those are). nil when unreachable. Main queue.
+/// "wda_only" (which those are), "touch" (whether it takes real touches at all). nil when
+/// unreachable. Main queue.
 - (void)fetchStatus:(void (^)(NSDictionary *_Nullable status))completion;
 
 /// Must be called when done: the session holds this object until then.

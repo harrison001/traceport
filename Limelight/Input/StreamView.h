@@ -38,6 +38,13 @@
 - (void) toggleTextInput;
 /// Brings it up if it is not already: something on the host is now waiting for text.
 - (void) showTextInput;
+
+/// Phone host, real touch: when set, one-finger touches go here instead of steering the host's
+/// pointer. Taken up at the start of the next gesture, never in the middle of one.
+@property (nonatomic, strong) UIResponder *realTouchHandler;
+
+/// A point in this view as a fraction (0–1) of the picture, clamped to it.
+- (CGPoint) normalizedVideoPoint:(CGPoint)viewPoint;
 #endif
 
 @end

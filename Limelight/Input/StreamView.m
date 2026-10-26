@@ -75,6 +75,7 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     double accumulatedMouseDeltaY;
     
     UIResponder* touchHandler;
+    UIResponder* gestureHandler;   // whichever of the two this gesture started with
     
     id<UserInteractionDelegate> interactionDelegate;
     NSTimer* interactionTimer;
@@ -270,6 +271,15 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
 
 #if !TARGET_OS_TV
 
+- (CGPoint) normalizedVideoPoint:(CGPoint)viewPoint {
+    CGPoint p = [self adjustCoordinatesForVideoArea:viewPoint];
+    CGSize video = [self getVideoAreaSize];
+    if (video.width <= 0 || video.height <= 0) {
+        return CGPointZero;
+    }
+    return CGPointMake(MIN(MAX(p.x / video.width, 0), 1), MIN(MAX(p.y / video.height, 0), 1));
+}
+
 - (uint16_t)getRotationFromAzimuthAngle:(float)azimuthAngle {
     // iOS reports azimuth of 0 when the stylus is pointing west, but Moonlight expects
     // rotation of 0 to mean the stylus is pointing north. Rotate the azimuth angle
@@ -392,6 +402,21 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     }
 #endif
     
+#if !TARGET_OS_TV
+    // A new gesture picks its handler; one already under way keeps the one it started with, so a
+    // switch of touch mode never leaves a button held down on the host.
+    if ([[event allTouches] count] == touches.count || gestureHandler == nil) {
+        gestureHandler = self.realTouchHandler ?: touchHandler;
+    }
+    if (gestureHandler != touchHandler) {
+        [gestureHandler touchesBegan:touches withEvent:event];
+        if ([[event allTouches] count] == 3) {
+            [self toggleTextInput];
+        }
+        return;
+    }
+#endif
+
     if (![onScreenControls handleTouchDownEvent:touches]) {
         // We still inform the touch handler even if we're going trigger the
         // keyboard activation gesture. This is important to ensure the touch
@@ -980,6 +1005,12 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     
     hasUserInteracted = YES;
     
+#if !TARGET_OS_TV
+    if (gestureHandler != nil && gestureHandler != touchHandler) {
+        [gestureHandler touchesMoved:touches withEvent:event];
+        return;
+    }
+#endif
     if (![onScreenControls handleTouchMovedEvent:touches]) {
         [touchHandler touchesMoved:touches withEvent:event];
     }
@@ -1047,12 +1078,24 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     }
 #endif
     
+#if !TARGET_OS_TV
+    if (gestureHandler != nil && gestureHandler != touchHandler) {
+        [gestureHandler touchesEnded:touches withEvent:event];
+        return;
+    }
+#endif
     if (![onScreenControls handleTouchUpEvent:touches]) {
         [touchHandler touchesEnded:touches withEvent:event];
     }
 }
 
 - (void)touchesCancelled:(NSSet *)touches withEvent:(UIEvent *)event {
+#if !TARGET_OS_TV
+    if (gestureHandler != nil && gestureHandler != touchHandler) {
+        [gestureHandler touchesCancelled:touches withEvent:event];
+        return;
+    }
+#endif
     [touchHandler touchesCancelled:touches withEvent:event];
     [self handleMouseButtonEvent:BUTTON_ACTION_RELEASE
                       forTouches:touches
