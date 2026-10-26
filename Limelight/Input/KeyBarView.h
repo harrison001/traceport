@@ -57,6 +57,11 @@ typedef NS_ENUM(NSInteger, KeyBarContent) {
 /// are not worth discovering.
 - (void)keyBar:(KeyBarView *)bar requestsAppNameWithCompletion:(void (^)(NSString *name))completion;
 
+@optional
+/// One of a phone host's own actions (home, apps, back...), to be asked of the gateway. Without
+/// this the bar sends @c fallbackKey, the F13–F23 the gateway's bridge also understands.
+- (void)keyBar:(KeyBarView *)bar performPhoneAction:(NSString *)action fallbackKey:(short)fallbackKey;
+
 @end
 
 @interface KeyBarView : UIView

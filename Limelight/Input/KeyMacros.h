@@ -26,8 +26,8 @@ NS_ASSUME_NONNULL_BEGIN
 typedef NS_ENUM(NSInteger, KeyMacroHost) {
     KeyMacroHostMacOS,
     KeyMacroHostWindows,
-    /// A phone driven through the TracePort gateway. Its actions are F13–F23, which the gateway
-    /// bridge turns into the phone's own (home, app switcher, back...); see ios_bridge phone_keys.
+    /// A phone driven through the TracePort gateway. Its own actions (home, app switcher, back...)
+    /// are asked of the gateway by name, with F13–F23 as the fallback its bridge also understands.
     KeyMacroHostPhone,
 };
 
@@ -55,6 +55,10 @@ typedef NS_ENUM(NSInteger, KeyItemKind) {
     /// any of them by name. Lifted from TraceRecorder's Quick Input panel, where it has been
     /// the way to switch programs for months.
     KeyItemKindAppJump,
+    /// One of a phone host's own actions — Home, the app switcher, Back — asked of the gateway by
+    /// name, which does it, checks it took and says so. The virtual key is the F13–F23 the
+    /// gateway's bridge also understands, sent instead when the gateway cannot be asked.
+    KeyItemKindPhoneAction,
 };
 
 /// One step of a sequence.
@@ -88,6 +92,9 @@ typedef NS_ENUM(NSInteger, KeyItemKind) {
 /// For app jumps: the program to open. Nil for everything else.
 @property (nonatomic, copy, readonly, nullable) NSString *appName;
 
+/// For phone actions: the gateway's name for it (home, apps, back...). Nil for everything else.
+@property (nonatomic, copy, readonly, nullable) NSString *phoneAction;
+
 /// Whether the user assembled this chord rather than picking it from the catalogue. Such an item
 /// behaves like any other macro; the difference is that nothing can look up what it means, so its
 /// definition has to be stored alongside the pad.
@@ -99,6 +106,7 @@ typedef NS_ENUM(NSInteger, KeyItemKind) {
 + (instancetype)sequence:(NSString *)label steps:(NSArray<KeyStep *> *)steps;
 + (instancetype)scroll:(NSString *)label clicks:(signed char)clicks;
 + (instancetype)appJump:(NSString *)appName;
++ (instancetype)phoneAction:(NSString *)label action:(NSString *)action fallback:(short)virtualKey;
 
 /// The modifier symbols for a set of flags, in the order macOS writes them: ⌃⌥⇧⌘.
 extern NSString *KeyModifierSymbols(UIKeyModifierFlags flags);

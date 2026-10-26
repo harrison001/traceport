@@ -43,6 +43,11 @@
 /// pointer. Taken up at the start of the next gesture, never in the middle of one.
 @property (nonatomic, strong) UIResponder *realTouchHandler;
 
+/// Phone host: does one of the phone's own actions from the key line (home, apps, back...), or
+/// "touchmode" to switch between real touch and the pointer. Unset, the line sends the F13–F23
+/// fallback key instead.
+@property (nonatomic, copy) void (^phoneActionHandler)(NSString *action, short fallbackKey);
+
 /// A point in this view as a fraction (0–1) of the picture, clamped to it.
 - (CGPoint) normalizedVideoPoint:(CGPoint)viewPoint;
 #endif

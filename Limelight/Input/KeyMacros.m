@@ -59,6 +59,12 @@
     return item;
 }
 
++ (instancetype)phoneAction:(NSString *)label action:(NSString *)action fallback:(short)virtualKey {
+    KeyItem *item = [self itemWithLabel:label kind:KeyItemKindPhoneAction code:virtualKey flags:0];
+    item->_phoneAction = [action copy];
+    return item;
+}
+
 /// Marks an app jump so it survives a round trip through the stored pad list, which is a list
 /// of labels: the arrow is part of the label, and what follows it is the program's name.
 NSString * const KeyAppJumpPrefix = @"→";
@@ -112,6 +118,7 @@ NSString *KeyModifierSymbols(UIKeyModifierFlags flags) {
     copy->_detail = _detail;
     copy->_wantsKeyboard = _wantsKeyboard;
     copy->_appName = _appName;
+    copy->_phoneAction = _phoneAction;
     copy->_isCustom = _isCustom;
     return copy;
 }
@@ -204,26 +211,32 @@ static NSString *KeyHiddenDefaultsKey(NSString *profileKey) {
 
 + (NSArray<KeyGroup *> *)keyboardGroupsForHost:(KeyMacroHost)host {
     if (host == KeyMacroHostPhone) {
-        // A phone gets only what its own on-screen keyboard lacks and iOS actually reads from a
-        // hardware keyboard. Shift, return, delete, space and the digits are on the system
-        // keyboard right below; Home/End, paging, Ins/Pause/Break and F1–F12 mean nothing to a
-        // phone. Its own actions (Home, Apps, Back...) live on the pad.
+        // A phone has no dock along the bottom any more, so this line is where its keys live:
+        // what driving a phone needs that a picture of one has no buttons for, then editing.
+        // Gone from here: ⌘ (the edit keys carry it), esc and tab (nothing on a phone uses them),
+        // ↑ and ↓ (a phone's text is a line at a time).
+        UIKeyModifierFlags cmd = UIKeyModifierCommand;
+        NSDictionary<NSString *, KeyItem *> *phone = [self phoneItemsByLabel];
         return @[
+            [KeyGroup groupWithItems:@[phone[@"Home"], phone[@"Apps"], phone[@"Back"], phone[@"Close"]]],
+            [KeyGroup groupWithItems:@[phone[@"CC"], phone[@"Alerts"], phone[@"Search"], phone[@"Touch"]]],
             [KeyGroup groupWithItems:@[
-                // ⌘C, ⌘V and the like: the system keyboard has no ⌘
-                [KeyItem modifier:@"⌘" code:0x5B flag:UIKeyModifierCommand],
-            ]],
-            [KeyGroup groupWithItems:@[
-                [[KeyItem key:@"esc" code:0x1B] explained:@"Dismiss an alert or the keyboard"],
-                [[KeyItem key:@"tab" code:0x09] explained:@"Next field"],
+                [[KeyItem macro:@"⌘C" code:0x43 flags:cmd] explained:@"Copy"],
+                [[KeyItem macro:@"⌘V" code:0x56 flags:cmd] explained:@"Paste"],
+                [[KeyItem macro:@"⌘A" code:0x41 flags:cmd] explained:@"Select all"],
+                [[KeyItem macro:@"⌘Z" code:0x5A flags:cmd] explained:@"Undo"],
             ]],
             // Moving the text cursor, which on the phone itself takes a long press and a drag
             [KeyGroup groupWithItems:@[
                 [KeyItem key:@"←" code:0x25],
-                [KeyItem key:@"↓" code:0x28],
-                [KeyItem key:@"↑" code:0x26],
                 [KeyItem key:@"→" code:0x27],
             ]],
+            [KeyGroup groupWithItems:@[
+                phone[@"◀︎"], phone[@"▶︎"],
+                [[KeyItem scroll:@"∧" clicks:3] explained:@"Scroll up"],
+                [[KeyItem scroll:@"∨" clicks:-3] explained:@"Scroll down"],
+            ]],
+            [KeyGroup groupWithItems:@[phone[@"Shot"], phone[@"Lock"]]],
         ];
     }
     // A Mac's modifiers are named the Apple way; everything else gets the PC names
@@ -359,29 +372,49 @@ static NSString *KeyHiddenDefaultsKey(NSString *profileKey) {
     ]];
 }
 
+/// A phone host's own actions, by label. Asked of the gateway by name; the code is the F13–F23
+/// its bridge turns into the same action (ios_bridge.py phone_keys), for a gateway that cannot be
+/// asked. Back, Close and the flicks are finger gestures made through WebDriverAgent.
++ (NSDictionary<NSString *, KeyItem *> *)phoneItemsByLabel {
+    KeyItem *(^act)(NSString *, NSString *, short, NSString *) =
+        ^KeyItem *(NSString *label, NSString *action, short key, NSString *detail) {
+        return [[KeyItem phoneAction:label action:action fallback:key] explained:detail];
+    };
+    NSArray<KeyItem *> *items = @[
+        act(@"Home", @"home", 0x7C, @"Home Screen"),
+        act(@"Apps", @"apps", 0x7D, @"App switcher"),
+        act(@"Back", @"back", 0x84, @"Back (swipe from the left edge)"),
+        act(@"Close", @"kill", 0x83, @"Close the app in front"),
+        act(@"CC", @"cc", 0x7E, @"Control Centre"),
+        act(@"Alerts", @"notif", 0x7F, @"Notification Centre"),
+        [act(@"Search", @"search", 0x80, @"Spotlight — type to search") needingKeyboard],
+        act(@"Lock", @"lock", 0x81, @"Lock the screen"),
+        act(@"Shot", @"shot", 0x82, @"Screenshot"),
+        act(@"◀︎", @"swiperight", 0x86, @"Previous page"),
+        act(@"▶︎", @"swipeleft", 0x85, @"Next page"),
+        // Not the phone's: this device's switch between real touch and steering the pointer
+        act(@"Touch", @"touchmode", 0, @"Real touch or pointer"),
+    ];
+    NSMutableDictionary<NSString *, KeyItem *> *byLabel = [NSMutableDictionary dictionary];
+    for (KeyItem *item in items) {
+        byLabel[item.label] = item;
+    }
+    return byLabel;
+}
+
 /// Window and desktop navigation. Multi-finger gestures cannot be produced from here at all,
 /// so these are their keyboard equivalents — which is what the gestures trigger anyway.
 + (KeyGroup *)systemGroupForHost:(KeyMacroHost)host {
     UIKeyModifierFlags shift = UIKeyModifierShift;
 
     if (host == KeyMacroHostPhone) {
-        // F13–F23 mean nothing to a phone; the gateway bridge turns each into the phone action
-        // named here (ios_bridge.py phone_keys). The swipes — kill, back, the two flicks — are
-        // real finger gestures made through WebDriverAgent, so they need it running on the phone.
-        return [KeyGroup groupNamed:@"iPhone" items:@[
-            [[KeyItem macro:@"Home" code:0x7C flags:0] explained:@"Home Screen"],
-            [[KeyItem macro:@"Apps" code:0x7D flags:0] explained:@"App switcher"],
-            [[KeyItem macro:@"Back" code:0x84 flags:0] explained:@"Back (swipe from the left edge)"],
-            [[KeyItem macro:@"Kill" code:0x83 flags:0] explained:@"Close the current app"],
-            [[KeyItem macro:@"CC" code:0x7E flags:0] explained:@"Control Center"],
-            [[KeyItem macro:@"Notif" code:0x7F flags:0] explained:@"Notification Center"],
-            [[[KeyItem macro:@"Search" code:0x80 flags:0] explained:@"Spotlight — type to search"]
-              needingKeyboard],
-            [[KeyItem macro:@"Lock" code:0x81 flags:0] explained:@"Lock the screen"],
-            [[KeyItem macro:@"Shot" code:0x82 flags:0] explained:@"Screenshot"],
-            [[KeyItem macro:@"◀︎" code:0x85 flags:0] explained:@"Swipe left (next page)"],
-            [[KeyItem macro:@"▶︎" code:0x86 flags:0] explained:@"Swipe right (previous page)"],
-        ]];
+        NSDictionary<NSString *, KeyItem *> *phone = [self phoneItemsByLabel];
+        NSMutableArray<KeyItem *> *items = [NSMutableArray array];
+        for (NSString *label in @[@"Home", @"Apps", @"Back", @"Close", @"CC", @"Alerts", @"Search",
+                                  @"Lock", @"Shot", @"◀︎", @"▶︎", @"Touch"]) {
+            [items addObject:phone[label]];
+        }
+        return [KeyGroup groupNamed:@"iPhone" items:items];
     }
 
     if (host == KeyMacroHostMacOS) {
@@ -463,7 +496,7 @@ static NSString *KeyHiddenDefaultsKey(NSString *profileKey) {
     if (host == KeyMacroHostPhone) {
         return @[
             // Left column: getting around the phone, which a remote picture has no buttons for
-            @"Home", @"Apps", @"Back", @"Kill", @"CC", @"Notif", @"Search", @"Lock",
+            @"Home", @"Apps", @"Back", @"Close", @"CC", @"Alerts", @"Search", @"Lock",
             // Right column: editing, page flicks and scrolling
             @"⌘C", @"⌘V", @"⌘Z", @"⌘A", @"◀︎", @"▶︎", @"∧", @"∨",
         ];

@@ -453,9 +453,10 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     // With a hardware keyboard attached there is nothing to type on screen, and
     // the system keyboard would cover half the picture for no reason. Start
     // without it, as Jump Desktop and RealVNC do — but this is only the starting
-    // point now; the bar carries a key to change it either way. A phone host is only
-    // ever asked for the keyboard in order to type, so it gets it regardless.
-    [self presentKeyBarWithSystemKeyboard:phoneHost || ![self hasHardwareKeyboard]];
+    // point now; the bar carries a key to change it either way. A phone host opens to its
+    // keys alone: they are mostly the phone's own actions, the phone shows its own keyboard
+    // when something wants text, and this one would cover half of it. ⌨ brings it up.
+    [self presentKeyBarWithSystemKeyboard:!phoneHost && ![self hasHardwareKeyboard]];
 #else
     [keyInputField becomeFirstResponder];
 #endif
@@ -713,7 +714,10 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     [NSLayoutConstraint activateConstraints:@[
         [keyBar.leadingAnchor constraintEqualToAnchor:host.leadingAnchor],
         [keyBar.trailingAnchor constraintEqualToAnchor:host.trailingAnchor],
-        [keyBar.bottomAnchor constraintEqualToAnchor:host.bottomAnchor],
+        // A phone streamed to a phone reaches the bottom of the screen: keep the line clear of
+        // the home indicator, where a swipe belongs to this device and not to the keys
+        [keyBar.bottomAnchor constraintEqualToAnchor:phoneHost ? host.safeAreaLayoutGuide.bottomAnchor
+                                                               : host.bottomAnchor],
     ]];
 }
 
@@ -739,11 +743,6 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
 }
 
 - (void)keyBarDidToggleSystemKeyboard:(KeyBarView *)bar {
-    if (phoneHost) {
-        // The dock is along the bottom already; a line pinned over it would only cover it.
-        [self dismissKeyBar];
-        return;
-    }
     if (keyBar == nil) {
         // Pressed on the pad after the keyboard was dismissed: bring the whole layer back.
         [self createKeyboardBar];
@@ -751,6 +750,14 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
         return;
     }
     [self presentKeyBarWithSystemKeyboard:!systemKeyboardVisible];
+}
+
+- (void)keyBar:(KeyBarView *)bar performPhoneAction:(NSString *)action fallbackKey:(short)fallbackKey {
+    if (self.phoneActionHandler != nil) {
+        self.phoneActionHandler(action, fallbackKey);
+    } else if (fallbackKey != 0) {
+        [KeyboardSupport sendChordWithVirtualKey:fallbackKey modifierFlags:0];
+    }
 }
 
 - (void)keyBarDidRequestSystemKeyboard:(KeyBarView *)bar {

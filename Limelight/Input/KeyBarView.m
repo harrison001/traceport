@@ -995,6 +995,15 @@ static NSString *KeyBarProfileKey(NSString *hostKey, NSString *appName) {
         case KeyItemKindAppJump:
             [self jumpToApp:button.item.appName];
             return;
+
+        case KeyItemKindPhoneAction:
+            if ([self.delegate respondsToSelector:@selector(keyBar:performPhoneAction:fallbackKey:)]) {
+                [self.delegate keyBar:self performPhoneAction:button.item.phoneAction
+                          fallbackKey:button.item.virtualKey];
+            } else if (button.item.virtualKey != 0) {
+                [KeyboardSupport sendChordWithVirtualKey:button.item.virtualKey modifierFlags:0];
+            }
+            return;
     }
 }
 

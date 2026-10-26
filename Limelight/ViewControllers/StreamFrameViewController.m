@@ -12,7 +12,8 @@
 #import "StreamManager.h"
 #import "ControllerSupport.h"
 #import "DataManager.h"
-#import "PhoneDockView.h"
+#import "PhoneActionClient.h"
+#import "KeyboardSupport.h"
 #import "PhoneTouchHandler.h"
 
 #include <sys/socket.h>
@@ -243,7 +244,9 @@ enum { kMicFrameBytes = 640 };              // 20 ms of 16 kHz mono s16
     UIScreenEdgePanGestureRecognizer *_phoneHomeRecognizer;  // phone host: swipe up from the bottom edge
     TPMicUplink *_micUplink;
     UIButton *_micButton;
-    PhoneDockView *_phoneDock API_AVAILABLE(ios(15.0));  // phone host: its buttons, below the picture
+    BOOL _phoneHost;                                     // a phone through the TracePort gateway
+    UILabel *_phoneToast;                                // phone host: what an action or touch came to
+    NSUInteger _phoneToastGeneration;
     PhoneTouchHandler *_phoneTouch;                      // phone host: real touch, when it is on
     BOOL _realTouchWanted;                               // the switch, remembered per host
     BOOL _gatewayTouches;                                // the gateway says it can replay touches now
@@ -327,28 +330,12 @@ enum { kMicFrameBytes = 640 };              // 20 ms of 16 kHz mono s16
     _controllerSupport = [[ControllerSupport alloc] initWithConfig:self.streamConfig delegate:self];
     _inactivityTimer = nil;
     
-    // A phone host gets its buttons in a dock along the bottom, and the picture is laid out in
-    // what is left above it so nothing covers it. The renderer and the touch map both measure the
-    // stream view, so making that view shorter is all either needs.
+    // A phone host has no buttons of its own on screen: its actions are on the key line (three
+    // fingers), and with real touch the phone's own gestures do the rest. The picture gets the
+    // whole screen; iOS defers its edge gestures here, so swipes from the edges reach the phone.
     CGRect streamFrame = self.view.frame;
 #if !TARGET_OS_TV
-    if (@available(iOS 15.0, *)) {
-        if ([HostProfile targetTypeForHost:_streamConfig.hostUuid] == TPTargetPhone) {
-            UIWindow *window = UIApplication.sharedApplication.windows.firstObject;
-            // The dock's size is settled here, before the picture is laid out: the renderer sizes
-            // its layer once, so the picture cannot be resized under a running stream. Real touch
-            // gets one row; a switch made mid-stream changes the touches straight away and the
-            // dock at the next connection.
-            _realTouchWanted = [self realTouchPreference];
-            CGFloat dockHeight = [PhoneDockView contentHeightCompact:_realTouchWanted] + window.safeAreaInsets.bottom;
-            streamFrame.size.height -= dockHeight;
-            _phoneDock = [[PhoneDockView alloc] initWithFrame:CGRectMake(0, CGRectGetMaxY(streamFrame),
-                                                                         self.view.frame.size.width,
-                                                                         dockHeight)
-                                                      compact:_realTouchWanted];
-            _phoneDock.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleTopMargin;
-        }
-    }
+    _phoneHost = [HostProfile targetTypeForHost:_streamConfig.hostUuid] == TPTargetPhone;
 #endif
     _streamView = [[StreamView alloc] initWithFrame:streamFrame];
     [_streamView setupStreamView:_controllerSupport interactionDelegate:self config:self.streamConfig];
@@ -476,19 +463,18 @@ enum { kMicFrameBytes = 640 };              // 20 ms of 16 kHz mono s16
     }
     
 #if !TARGET_OS_TV
-    if (@available(iOS 15.0, *)) {
-        if (_phoneDock != nil) {
-            __weak StreamView *streamView = _streamView;
-            _phoneDock.toggleKeyboard = ^{ [streamView toggleTextInput]; };
-            _phoneDock.showKeyboard = ^{ [streamView showTextInput]; };
-            _phoneClient = [[PhoneActionClient alloc] initWithHost:_streamConfig.host
-                                                         httpsPort:_streamConfig.httpsPort
-                                                        serverCert:_streamConfig.serverCert];
-            _phoneDock.client = _phoneClient;
-            [self setUpRealTouch];
-            [self.view addSubview:_phoneDock];
-            [self startPhoneStatus];
-        }
+    if (_phoneHost) {
+        _realTouchWanted = [self realTouchPreference];
+        _phoneClient = [[PhoneActionClient alloc] initWithHost:_streamConfig.host
+                                                     httpsPort:_streamConfig.httpsPort
+                                                    serverCert:_streamConfig.serverCert];
+        __weak StreamFrameViewController *weakSelf = self;
+        _streamView.phoneActionHandler = ^(NSString *action, short fallbackKey) {
+            [weakSelf performPhoneAction:action fallbackKey:fallbackKey];
+        };
+        [self buildPhoneToast];
+        [self setUpRealTouch];
+        [self startPhoneStatus];
     }
 #endif
     [self.view addSubview:_stageLabel];
@@ -552,10 +538,10 @@ enum { kMicFrameBytes = 640 };              // 20 ms of 16 kHz mono s16
     if (t.y > -40) {
         return;   // barely moved: not a swipe
     }
-    short key = fabs(v.y) < 300 ? 0x7D /* F14: app switcher */ : 0x7C /* F13: home */;
-    LiSendKeyboardEvent(key, KEY_ACTION_DOWN, 0);
-    LiSendKeyboardEvent(key, KEY_ACTION_UP, 0);
-    Log(LOG_I, @"Phone bottom-edge swipe: %s", key == 0x7C ? "home" : "app switcher");
+    BOOL switcher = fabs(v.y) < 300;
+    Log(LOG_I, @"Phone bottom-edge swipe: %s", switcher ? "app switcher" : "home");
+    // Through the gateway like the keys, so it is checked and confirmed; F13/F14 if it cannot be asked
+    [self performPhoneAction:switcher ? @"apps" : @"home" fallbackKey:switcher ? 0x7D : 0x7C];
 }
 #endif
 
@@ -570,7 +556,7 @@ enum { kMicFrameBytes = 640 };              // 20 ms of 16 kHz mono s16
     return saved == nil ? YES : [saved boolValue];
 }
 
-- (void)setUpRealTouch API_AVAILABLE(ios(15.0)) {
+- (void)setUpRealTouch {
     _phoneTouch = [[PhoneTouchHandler alloc] initWithView:_streamView client:_phoneClient];
     __weak StreamFrameViewController *weakSelf = self;
     _phoneTouch.onResult = ^(NSDictionary *result) {
@@ -579,7 +565,7 @@ enum { kMicFrameBytes = 640 };              // 20 ms of 16 kHz mono s16
             return;
         }
         if (result == nil) {
-            [strongSelf->_phoneDock showToast:@"✗ Touch did not reach the gateway" ok:NO];
+            [strongSelf showPhoneToast:@"✗ Touch did not reach the gateway" ok:NO];
             return;
         }
         if ([result[@"ok"] boolValue]) {
@@ -590,43 +576,117 @@ enum { kMicFrameBytes = 640 };              // 20 ms of 16 kHz mono s16
             // WebDriverAgent went away under us: the pointer still works, so use it until it is back
             [strongSelf gatewayTouchesAvailable:NO];
         }
-        [strongSelf->_phoneDock showToast:[@"✗ Touch  " stringByAppendingString:why] ok:NO];
-    };
-    _phoneDock.realTouch = _realTouchWanted;
-    _phoneDock.realTouchChanged = ^(BOOL on) {
-        StreamFrameViewController *strongSelf = weakSelf;
-        if (strongSelf == nil) {
-            return;
-        }
-        strongSelf->_realTouchWanted = on;
-        [[NSUserDefaults standardUserDefaults] setBool:on forKey:[strongSelf realTouchKey]];
-        [strongSelf applyTouchRouting];
-        NSString *what = on ? (strongSelf->_gatewayTouches ? @"Real touch on" : @"Real touch on — waiting for WebDriverAgent, pointer until then")
-                            : @"Pointer on";
-        [strongSelf->_phoneDock showToast:what ok:YES];
+        [strongSelf showPhoneToast:[@"✗ Touch  " stringByAppendingString:why] ok:NO];
     };
     [self applyTouchRouting];
 }
 
-- (void)gatewayTouchesAvailable:(BOOL)available API_AVAILABLE(ios(15.0)) {
+/// The key line's Touch key.
+- (void)toggleRealTouch {
+    _realTouchWanted = !_realTouchWanted;
+    [[NSUserDefaults standardUserDefaults] setBool:_realTouchWanted forKey:[self realTouchKey]];
+    [self applyTouchRouting];
+    NSString *what = !_realTouchWanted ? @"Pointer"
+                   : _gatewayTouches ? @"Real touch"
+                                     : @"Real touch — waiting for WebDriverAgent, pointer until then";
+    [self showPhoneToast:what ok:YES];
+}
+
+/// One of the phone's own actions, asked of the gateway, which does it, checks it took and says
+/// so. A gateway that cannot be asked gets the F13–F23 key its bridge also understands.
+- (void)performPhoneAction:(NSString *)action fallbackKey:(short)fallbackKey {
+    [[[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight] impactOccurred];
+    if ([action isEqualToString:@"touchmode"]) {
+        [self toggleRealTouch];
+        return;
+    }
+    __weak StreamFrameViewController *weakSelf = self;
+    [_phoneClient perform:action completion:^(NSDictionary *result) {
+        StreamFrameViewController *strongSelf = weakSelf;
+        if (strongSelf == nil) {
+            return;
+        }
+        if (result == nil) {
+            if (fallbackKey != 0) {
+                [KeyboardSupport sendChordWithVirtualKey:fallbackKey modifierFlags:0];
+            }
+            [strongSelf showPhoneToast:@"Sent (gateway did not confirm)" ok:YES];
+            return;
+        }
+        NSString *label = [result[@"label"] isKindOfClass:[NSString class]] ? result[@"label"] : action;
+        if ([result[@"ok"] boolValue]) {
+            [strongSelf showPhoneToast:[@"✓ " stringByAppendingString:label] ok:YES];
+        } else {
+            NSString *why = [result[@"error"] isKindOfClass:[NSString class]] ? result[@"error"] : @"";
+            [strongSelf showPhoneToast:[NSString stringWithFormat:@"✗ %@  %@", label, why] ok:NO];
+            [[[UINotificationFeedbackGenerator alloc] init] notificationOccurred:UINotificationFeedbackTypeError];
+        }
+    }];
+}
+
+- (void)buildPhoneToast {
+    _phoneToast = [[UILabel alloc] init];
+    _phoneToast.font = [UIFont systemFontOfSize:13 weight:UIFontWeightMedium];
+    _phoneToast.textColor = UIColor.whiteColor;
+    _phoneToast.textAlignment = NSTextAlignmentCenter;
+    _phoneToast.numberOfLines = 2;
+    _phoneToast.layer.cornerRadius = 14;
+    _phoneToast.layer.masksToBounds = YES;
+    _phoneToast.alpha = 0;
+    _phoneToast.userInteractionEnabled = NO;
+    _phoneToast.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.view addSubview:_phoneToast];
+    // Near the top, under the island: the key line and the keyboard take the bottom
+    [NSLayoutConstraint activateConstraints:@[
+        [_phoneToast.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
+        [_phoneToast.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:8],
+        [_phoneToast.widthAnchor constraintLessThanOrEqualToAnchor:self.view.widthAnchor constant:-32],
+        [_phoneToast.heightAnchor constraintGreaterThanOrEqualToConstant:28],
+    ]];
+}
+
+- (void)showPhoneToast:(NSString *)text ok:(BOOL)ok {
+    if (_phoneToast == nil) {
+        return;
+    }
+    [self.view bringSubviewToFront:_phoneToast];
+    _phoneToast.text = [NSString stringWithFormat:@"  %@  ", text];
+    _phoneToast.backgroundColor = ok ? [UIColor colorWithWhite:0.15 alpha:0.9]
+                                     : [UIColor colorWithRed:0.55 green:0.1 blue:0.1 alpha:0.92];
+    _phoneToast.alpha = 1;
+    NSUInteger generation = ++_phoneToastGeneration;
+    // A failure stays long enough to read the reason
+    __weak StreamFrameViewController *weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((ok ? 1.2 : 3.5) * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        StreamFrameViewController *strongSelf = weakSelf;
+        if (strongSelf == nil || generation != strongSelf->_phoneToastGeneration) {
+            return;
+        }
+        [UIView animateWithDuration:0.3 animations:^{ strongSelf->_phoneToast.alpha = 0; }];
+    });
+}
+
+- (void)gatewayTouchesAvailable:(BOOL)available {
     if (available == _gatewayTouches) {
         return;
     }
     _gatewayTouches = available;
     [self applyTouchRouting];
     if (_realTouchWanted) {
-        [_phoneDock showToast:available ? @"Real touch ready" : @"Real touch paused — WebDriverAgent is down, using the pointer"
+        [self showPhoneToast:available ? @"Real touch ready" : @"Real touch paused — WebDriverAgent is down, using the pointer"
                            ok:available];
     }
 }
 
-- (void)applyTouchRouting API_AVAILABLE(ios(15.0)) {
+- (void)applyTouchRouting {
     _streamView.realTouchHandler = (_realTouchWanted && _gatewayTouches) ? _phoneTouch : nil;
 }
 
-/// Greys out the dock keys that need WebDriverAgent while the gateway says it is down. A gateway
-/// that does not answer leaves the keys as they are: it may simply predate the action port.
-- (void)startPhoneStatus API_AVAILABLE(ios(15.0)) {
+/// Asks the gateway every few seconds whether it can replay touches right now (WebDriverAgent
+/// running), so real touch steps aside for the pointer while it cannot. A gateway that does not
+/// answer changes nothing: it may simply predate the action port.
+- (void)startPhoneStatus {
     __weak StreamFrameViewController *weakSelf = self;
     void (^refresh)(void) = ^{
         StreamFrameViewController *strongSelf = weakSelf;
@@ -638,9 +698,7 @@ enum { kMicFrameBytes = 640 };              // 20 ms of 16 kHz mono s16
             if (again == nil || status == nil) {
                 return;
             }
-            NSArray *wdaOnly = [status[@"wda_only"] isKindOfClass:[NSArray class]] ? status[@"wda_only"] : @[];
             BOOL wda = [status[@"wda"] boolValue];
-            [again->_phoneDock setUnavailableActions:wda ? [NSSet set] : [NSSet setWithArray:wdaOnly]];
             [again gatewayTouchesAvailable:wda && [status[@"touch"] boolValue]];
         }];
     };
