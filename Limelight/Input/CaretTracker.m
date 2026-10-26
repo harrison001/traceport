@@ -130,29 +130,35 @@ static const NSTimeInterval pollInterval = 0.15;
 ///
 /// A host's certificate is self-signed, so the system's own trust evaluation is replaced by the
 /// check the rest of the app makes: this is the certificate the host presented when it was
-/// paired, and nothing else will do. Kept here rather than shared with HttpManager because the
-/// two sessions have nothing in common beyond the certificates themselves.
+/// paired, and nothing else will do. Kept apart from HttpManager because the sessions have
+/// nothing in common beyond the certificates themselves; the phone-action client shares it.
 - (void)URLSession:(NSURLSession *)session
 didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge
  completionHandler:(void (^)(NSURLSessionAuthChallengeDisposition, NSURLCredential *_Nullable))completionHandler {
+    [CaretTracker answerChallenge:challenge serverCert:_serverCert completionHandler:completionHandler];
+}
+
++ (void)answerChallenge:(NSURLAuthenticationChallenge *)challenge
+             serverCert:(NSData *)serverCert
+      completionHandler:(void (^)(NSURLSessionAuthChallengeDisposition, NSURLCredential *_Nullable))completionHandler {
     NSString *method = challenge.protectionSpace.authenticationMethod;
 
     if ([method isEqualToString:NSURLAuthenticationMethodServerTrust]) {
         SecTrustRef trust = challenge.protectionSpace.serverTrust;
-        if (trust == NULL || SecTrustGetCertificateCount(trust) != 1) {
+        if (trust == NULL || SecTrustGetCertificateCount(trust) != 1 || serverCert == nil) {
             completionHandler(NSURLSessionAuthChallengePerformDefaultHandling, nil);
             return;
         }
 
         SecCertificateRef presented = SecTrustGetCertificateAtIndex(trust, 0);
         CFDataRef presentedData = presented != NULL ? SecCertificateCopyData(presented) : NULL;
-        BOOL matches = presentedData != NULL && CFEqual(presentedData, (__bridge CFDataRef)_serverCert);
+        BOOL matches = presentedData != NULL && CFEqual(presentedData, (__bridge CFDataRef)serverCert);
         if (presentedData != NULL) {
             CFRelease(presentedData);
         }
 
         if (!matches) {
-            Log(LOG_E, @"Caret tracking: server certificate mismatch");
+            Log(LOG_E, @"Paired connection: server certificate mismatch");
             completionHandler(NSURLSessionAuthChallengePerformDefaultHandling, nil);
             return;
         }

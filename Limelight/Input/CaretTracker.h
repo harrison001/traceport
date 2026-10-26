@@ -48,6 +48,14 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)start;
 - (void)stop;
 
+/// Answers a TLS challenge on a connection to the host the way the paired app does: the host's
+/// certificate must be exactly the one it presented at pairing, and the client presents the
+/// identity written at pairing. Shared with anything else that talks to the gateway over the
+/// paired connection.
++ (void)answerChallenge:(NSURLAuthenticationChallenge *)challenge
+             serverCert:(nullable NSData *)serverCert
+      completionHandler:(void (^)(NSURLSessionAuthChallengeDisposition, NSURLCredential *_Nullable))completionHandler;
+
 @end
 
 NS_ASSUME_NONNULL_END

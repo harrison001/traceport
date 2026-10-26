@@ -243,6 +243,8 @@ enum { kMicFrameBytes = 640 };              // 20 ms of 16 kHz mono s16
     TPMicUplink *_micUplink;
     UIButton *_micButton;
     PhoneDockView *_phoneDock API_AVAILABLE(ios(15.0));  // phone host: its buttons, below the picture
+    PhoneActionClient *_phoneClient;                     // phone host: asks the gateway to do the dock's actions
+    NSTimer *_phoneStatusTimer;                          // and, every few seconds, what it can do right now
 #endif
 }
 
@@ -469,7 +471,12 @@ enum { kMicFrameBytes = 640 };              // 20 ms of 16 kHz mono s16
             __weak StreamView *streamView = _streamView;
             _phoneDock.toggleKeyboard = ^{ [streamView toggleTextInput]; };
             _phoneDock.showKeyboard = ^{ [streamView showTextInput]; };
+            _phoneClient = [[PhoneActionClient alloc] initWithHost:_streamConfig.host
+                                                         httpsPort:_streamConfig.httpsPort
+                                                        serverCert:_streamConfig.serverCert];
+            _phoneDock.client = _phoneClient;
             [self.view addSubview:_phoneDock];
+            [self startPhoneStatus];
         }
     }
 #endif
@@ -541,10 +548,41 @@ enum { kMicFrameBytes = 640 };              // 20 ms of 16 kHz mono s16
 }
 #endif
 
+#if !TARGET_OS_TV
+/// Greys out the dock keys that need WebDriverAgent while the gateway says it is down. A gateway
+/// that does not answer leaves the keys as they are: it may simply predate the action port.
+- (void)startPhoneStatus API_AVAILABLE(ios(15.0)) {
+    __weak StreamFrameViewController *weakSelf = self;
+    void (^refresh)(void) = ^{
+        StreamFrameViewController *strongSelf = weakSelf;
+        if (strongSelf == nil) {
+            return;
+        }
+        [strongSelf->_phoneClient fetchStatus:^(NSDictionary *status) {
+            StreamFrameViewController *again = weakSelf;
+            if (again == nil || status == nil) {
+                return;
+            }
+            NSArray *wdaOnly = [status[@"wda_only"] isKindOfClass:[NSArray class]] ? status[@"wda_only"] : @[];
+            BOOL wda = [status[@"wda"] boolValue];
+            [again->_phoneDock setUnavailableActions:wda ? [NSSet set] : [NSSet setWithArray:wdaOnly]];
+        }];
+    };
+    refresh();
+    _phoneStatusTimer = [NSTimer scheduledTimerWithTimeInterval:5.0 repeats:YES block:^(NSTimer *timer) {
+        refresh();
+    }];
+}
+#endif
+
 - (void)willMoveToParentViewController:(UIViewController *)parent {
     // Only cleanup when we're being destroyed
     if (parent == nil) {
 #if !TARGET_OS_TV
+        [_phoneStatusTimer invalidate];
+        _phoneStatusTimer = nil;
+        [_phoneClient invalidate];
+        _phoneClient = nil;
         [_micUplink stop];
 #endif
         [_controllerSupport cleanup];
