@@ -253,6 +253,16 @@ static NSString *KeyHiddenDefaultsKey(NSString *profileKey) {
         [KeyGroup groupWithItems:@[
             [KeyItem key:@"esc" code:0x1B],
             [KeyItem key:@"tab" code:0x09],
+        ]],
+        // Right after tab and in sight without scrolling: moving around a shell, an editor or a
+        // dialog is tab and the arrows together.
+        [KeyGroup groupWithItems:@[
+            [KeyItem key:@"←" code:0x25],
+            [KeyItem key:@"↓" code:0x28],
+            [KeyItem key:@"↑" code:0x26],
+            [KeyItem key:@"→" code:0x27],
+        ]],
+        [KeyGroup groupWithItems:@[
             [KeyItem key:@"↵" code:0x0D],
             [KeyItem key:@"⌫" code:0x08],
             [KeyItem key:@"⌦" code:0x2E],
@@ -260,10 +270,9 @@ static NSString *KeyHiddenDefaultsKey(NSString *profileKey) {
             // and the only way to type one from the floating pad once that keyboard is gone.
             [KeyItem key:@"␣" code:0x20],
         ]],
-        // Ahead of the arrows, because this is what they are for: an input method on the host
-        // numbers its candidates and you pick one by pressing the number. Reaching them meant
-        // switching the system keyboard to its 123 layer, losing sight of the candidates in
-        // the process.
+        // An input method on the host numbers its candidates and you pick one by pressing the
+        // number. Reaching them meant switching the system keyboard to its 123 layer, losing
+        // sight of the candidates in the process. 0 last, where a keyboard has it.
         [KeyGroup groupWithItems:@[
             [KeyItem key:@"1" code:0x31],
             [KeyItem key:@"2" code:0x32],
@@ -274,12 +283,7 @@ static NSString *KeyHiddenDefaultsKey(NSString *profileKey) {
             [KeyItem key:@"7" code:0x37],
             [KeyItem key:@"8" code:0x38],
             [KeyItem key:@"9" code:0x39],
-        ]],
-        [KeyGroup groupWithItems:@[
-            [KeyItem key:@"←" code:0x25],
-            [KeyItem key:@"↓" code:0x28],
-            [KeyItem key:@"↑" code:0x26],
-            [KeyItem key:@"→" code:0x27],
+            [KeyItem key:@"0" code:0x30],
         ]],
         // Home, End and the two paging keys. Past the fold, which is what the bar scrolls for.
         [KeyGroup groupWithItems:@[
