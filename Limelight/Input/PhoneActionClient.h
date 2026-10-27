@@ -41,6 +41,17 @@ NS_ASSUME_NONNULL_BEGIN
 /// unreachable. Main queue.
 - (void)fetchStatus:(void (^)(NSDictionary *_Nullable status))completion;
 
+/// Push notifications from the gateway ("needs you" alerts, sent through Apple's push service).
+/// Asks for permission once and registers with iOS; the token arrives in the app delegate.
++ (void)requestPushPermission;
+
+/// The app delegate hands over the device token here; every live client then registers it.
++ (void)setPushToken:(NSData *)token;
+
+/// Tells this gateway where to push (POST /phone/push), if iOS has given a token yet. Also done
+/// automatically when a token arrives later.
+- (void)registerPush;
+
 /// Must be called when done: the session holds this object until then.
 - (void)invalidate;
 

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- The phone gateway pushes "needs you" alerts straight to TracePort (development builds go
+	     through Apple's sandbox; an App Store export rewrites this to production) -->
+	<key>aps-environment</key>
+	<string>development</string>
+</dict>
+</plist>

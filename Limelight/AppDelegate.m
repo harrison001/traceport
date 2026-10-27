@@ -7,6 +7,10 @@
 //
 
 #import "AppDelegate.h"
+#if !TARGET_OS_TV
+#import "PhoneActionClient.h"
+#import <UserNotifications/UserNotifications.h>
+#endif
 
 // UIKit built against the iOS 27 SDK refuses to launch an app that has not
 // adopted the scene life cycle, so the window moves here. It is still the one
@@ -56,6 +60,11 @@
 
 @end
 
+#if !TARGET_OS_TV
+@interface AppDelegate () <UNUserNotificationCenterDelegate>
+@end
+#endif
+
 @implementation AppDelegate
 
 @synthesize managedObjectContext = _managedObjectContext;
@@ -76,9 +85,35 @@ static NSString* DB_NAME = @"Limelight_iOS.sqlite";
     if (shortcut != nil) {
         _pcUuidToLoad = (NSString*)[shortcut.userInfo objectForKey:@"UUID"];
     }
+    [UNUserNotificationCenter currentNotificationCenter].delegate = self;
+    // Already allowed earlier: refresh the token every launch (it can change)
+    [[UNUserNotificationCenter currentNotificationCenter] getNotificationSettingsWithCompletionHandler:^(UNNotificationSettings *settings) {
+        if (settings.authorizationStatus == UNAuthorizationStatusAuthorized) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [application registerForRemoteNotifications];
+            });
+        }
+    }];
 #endif
     return YES;
 }
+
+#if !TARGET_OS_TV
+- (void)application:(UIApplication *)application didRegisterForRemoteNotificationsWithDeviceToken:(NSData *)deviceToken {
+    [PhoneActionClient setPushToken:deviceToken];
+}
+
+- (void)application:(UIApplication *)application didFailToRegisterForRemoteNotificationsWithError:(NSError *)error {
+    NSLog(@"Push: registration failed: %@", error.localizedDescription);
+}
+
+// Gateway alerts show as banners even while TracePort is in front
+- (void)userNotificationCenter:(UNUserNotificationCenter *)center
+       willPresentNotification:(UNNotification *)notification
+         withCompletionHandler:(void (^)(UNNotificationPresentationOptions))completionHandler {
+    completionHandler(UNNotificationPresentationOptionBanner | UNNotificationPresentationOptionList | UNNotificationPresentationOptionSound);
+}
+#endif
 
 #if !TARGET_OS_TV
 - (void)application:(UIApplication *)application performActionForShortcutItem:(UIApplicationShortcutItem *)shortcutItem completionHandler:(void (^)(BOOL succeeded))completionHandler {

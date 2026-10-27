@@ -7,9 +7,13 @@
 #import "CaretTracker.h"
 #import "Utils.h"
 #include <Limelight.h>
+#import <UserNotifications/UserNotifications.h>
 
 /// The gateway's action port sits this far above the host's TLS port, one per Sunshine instance.
 static const unsigned short actionPortOffset = 200;
+
+static NSString *const pushTokenKey = @"TracePortPushToken";
+static NSString *const pushTokenNotification = @"TracePortPushTokenArrived";
 
 @interface PhoneActionClient () <NSURLSessionDelegate>
 @end
@@ -42,10 +46,74 @@ static const unsigned short actionPortOffset = 200;
     // another way longer still.
     configuration.timeoutIntervalForRequest = 15.0;
     _session = [NSURLSession sessionWithConfiguration:configuration delegate:self delegateQueue:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(registerPush)
+                                                 name:pushTokenNotification object:nil];
     return self;
 }
 
++ (void)requestPushPermission {
+    UNUserNotificationCenter *center = [UNUserNotificationCenter currentNotificationCenter];
+    [center requestAuthorizationWithOptions:(UNAuthorizationOptionAlert | UNAuthorizationOptionSound | UNAuthorizationOptionBadge)
+                          completionHandler:^(BOOL granted, NSError *error) {
+        if (!granted) {
+            Log(LOG_I, @"Push: not allowed (%@)", error.localizedDescription ?: @"declined");
+            return;
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [[UIApplication sharedApplication] registerForRemoteNotifications];
+        });
+    }];
+}
+
++ (void)setPushToken:(NSData *)token {
+    NSMutableString *hex = [NSMutableString stringWithCapacity:token.length * 2];
+    const unsigned char *bytes = token.bytes;
+    for (NSUInteger i = 0; i < token.length; i++) {
+        [hex appendFormat:@"%02x", bytes[i]];
+    }
+    [[NSUserDefaults standardUserDefaults] setObject:hex forKey:pushTokenKey];
+    [[NSNotificationCenter defaultCenter] postNotificationName:pushTokenNotification object:nil];
+}
+
+/// Which of Apple's push services this build's token belongs to: development-signed builds carry a
+/// provisioning profile that says so; App Store builds have none and use production.
++ (NSString *)pushEnvironment {
+    NSString *path = [[NSBundle mainBundle] pathForResource:@"embedded" ofType:@"mobileprovision"];
+    NSData *data = path ? [NSData dataWithContentsOfFile:path] : nil;
+    if (data == nil) {
+        return @"production";
+    }
+    NSString *text = [[NSString alloc] initWithData:data encoding:NSISOLatin1StringEncoding];
+    NSRange key = [text rangeOfString:@"<key>aps-environment</key>"];
+    if (key.location == NSNotFound) {
+        return @"development";
+    }
+    NSString *rest = [text substringFromIndex:NSMaxRange(key)];
+    return [rest rangeOfString:@"production"].location < [rest rangeOfString:@"</string>"].location ? @"production" : @"development";
+}
+
+- (void)registerPush {
+    NSString *token = [[NSUserDefaults standardUserDefaults] stringForKey:pushTokenKey];
+    if (token == nil || _session == nil) {
+        return;
+    }
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:
+                                    [NSURL URLWithString:[_base stringByAppendingString:@"/phone/push"]]];
+    request.HTTPMethod = @"POST";
+    [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
+    NSDictionary *body = @{@"token": token,
+                           @"env": [PhoneActionClient pushEnvironment],
+                           @"name": UIDevice.currentDevice.name ?: @""};
+    request.HTTPBody = [NSJSONSerialization dataWithJSONObject:body options:0 error:nil];
+    [self send:request completion:^(NSDictionary *result) {
+        if (result != nil) {
+            Log(LOG_I, @"Push: registered with the gateway (ready %@)", result[@"push_ready"]);
+        }
+    }];
+}
+
 - (void)invalidate {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
     [_session invalidateAndCancel];
     _session = nil;
 }

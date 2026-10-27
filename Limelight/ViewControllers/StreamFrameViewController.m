@@ -250,6 +250,7 @@ enum { kMicFrameBytes = 640 };              // 20 ms of 16 kHz mono s16
     PhoneTouchHandler *_phoneTouch;                      // phone host: real touch, when it is on
     BOOL _realTouchWanted;                               // the switch, remembered per host
     BOOL _gatewayTouches;                                // the gateway says it can replay touches now
+    NSArray<NSString *> *_gatewayAlertKeys;              // the gateway's active alerts, last seen
     PhoneActionClient *_phoneClient;                     // phone host: asks the gateway to do the dock's actions
     NSTimer *_phoneStatusTimer;                          // and, every few seconds, what it can do right now
 #endif
@@ -475,6 +476,9 @@ enum { kMicFrameBytes = 640 };              // 20 ms of 16 kHz mono s16
         [self buildPhoneToast];
         [self setUpRealTouch];
         [self startPhoneStatus];
+        // the gateway pushes "needs you" alerts to this device
+        [PhoneActionClient requestPushPermission];
+        [_phoneClient registerPush];
     }
 #endif
     [self.view addSubview:_stageLabel];
@@ -667,6 +671,34 @@ enum { kMicFrameBytes = 640 };              // 20 ms of 16 kHz mono s16
     });
 }
 
+/// What the gateway says needs a person (alerts.rs). Shown when the set changes: a new one in red
+/// with its text, and a short note once all have cleared.
+- (void)gatewayAlerts:(id)alerts {
+    if (![alerts isKindOfClass:[NSArray class]]) {
+        return;
+    }
+    NSMutableArray<NSString *> *keys = [NSMutableArray array];
+    NSDictionary *newest = nil;
+    for (id a in (NSArray *)alerts) {
+        if (![a isKindOfClass:[NSDictionary class]] || ![a[@"key"] isKindOfClass:[NSString class]]) {
+            continue;
+        }
+        [keys addObject:a[@"key"]];
+        if (![_gatewayAlertKeys containsObject:a[@"key"]]) {
+            newest = a;
+        }
+    }
+    NSArray<NSString *> *before = _gatewayAlertKeys ?: @[];
+    _gatewayAlertKeys = keys;
+    if (newest != nil) {
+        NSString *title = [newest[@"title"] isKindOfClass:[NSString class]] ? newest[@"title"] : @"";
+        NSString *body = [newest[@"body"] isKindOfClass:[NSString class]] ? newest[@"body"] : @"";
+        [self showPhoneToast:[NSString stringWithFormat:@"⚠︎ %@\n%@", title, body] ok:NO];
+    } else if (keys.count == 0 && before.count > 0) {
+        [self showPhoneToast:@"✓ Gateway back to normal" ok:YES];
+    }
+}
+
 - (void)gatewayTouchesAvailable:(BOOL)available {
     if (available == _gatewayTouches) {
         return;
@@ -700,6 +732,7 @@ enum { kMicFrameBytes = 640 };              // 20 ms of 16 kHz mono s16
             }
             BOOL wda = [status[@"wda"] boolValue];
             [again gatewayTouchesAvailable:wda && [status[@"touch"] boolValue]];
+            [again gatewayAlerts:status[@"alerts"]];
         }];
     };
     refresh();
