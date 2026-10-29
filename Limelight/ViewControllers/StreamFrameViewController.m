@@ -79,6 +79,11 @@ enum { kMicFrameBytes = 640 };              // 20 ms of 16 kHz mono s16
     _addrLen = res->ai_addrlen;
     freeaddrinfo(res);
     if (_sock < 0) return @"Can't open a UDP socket";
+    // Mark the mic as interactive voice: Wi-Fi sends it from the voice queue (WMM AC_VO, DSCP 46)
+    // instead of queueing it with the stream's traffic. A one-hour call on 2026-10-28 had the
+    // packets arrive 100–817 ms late in bursts (none lost) and the gateway's buffer ran dry each time.
+    int svc = NET_SERVICE_TYPE_VO;
+    setsockopt(_sock, SOL_SOCKET, SO_NET_SERVICE_TYPE, &svc, sizeof(svc));
 
     NSError *err = nil;
     AVAudioSession *session = [AVAudioSession sharedInstance];
