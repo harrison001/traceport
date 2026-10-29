@@ -322,8 +322,11 @@ didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge
         NSString *number = [call[@"number"] isKindOfClass:[NSString class]] ? call[@"number"] : @"";
         CXCallUpdate *update = [[CXCallUpdate alloc] init];
         update.remoteHandle = [self handleFor:call];
-        update.localizedCallerName = [NSString stringWithFormat:@"%@ · home phone",
-                                      name.length > 0 ? name : (number.length > 0 ? number : @"Unknown")];
+        // who and through what: "Alice · WeChat" for a WeChat invite, "+1 555… · home phone" for a call
+        NSString *source = [call[@"source"] isKindOfClass:[NSString class]] ? call[@"source"] : @"";
+        NSString *via = [source isEqualToString:@"wechat"] ? @"WeChat" : @"home phone";
+        update.localizedCallerName = [NSString stringWithFormat:@"%@ · %@",
+                                      name.length > 0 ? name : (number.length > 0 ? number : @"Unknown"), via];
         update.hasVideo = NO;
         update.supportsHolding = NO;
         update.supportsGrouping = NO;
