@@ -258,6 +258,7 @@ enum { kMicFrameBytes = 640 };              // 20 ms of 16 kHz mono s16
     NSArray<NSString *> *_gatewayAlertKeys;              // the gateway's active alerts, last seen
     PhoneActionClient *_phoneClient;                     // phone host: asks the gateway to do the dock's actions
     NSTimer *_phoneStatusTimer;                          // and, every few seconds, what it can do right now
+    NSTimer *_phoneCallTimer;                            // every second: is the phone ringing (PhoneCallCenter)
 #endif
 }
 
@@ -480,6 +481,7 @@ enum { kMicFrameBytes = 640 };              // 20 ms of 16 kHz mono s16
         };
         [self buildPhoneToast];
         [self setUpRealTouch];
+        _phoneClient.hostUuid = _streamConfig.hostUuid;
         [self startPhoneStatus];
         // the gateway pushes "needs you" alerts to this device
         [PhoneActionClient requestPushPermission];
@@ -744,6 +746,16 @@ enum { kMicFrameBytes = 640 };              // 20 ms of 16 kHz mono s16
     _phoneStatusTimer = [NSTimer scheduledTimerWithTimeInterval:5.0 repeats:YES block:^(NSTimer *timer) {
         refresh();
     }];
+    // Calls ring here within a second while streaming, push or no push (PhoneCallCenter)
+    _phoneCallTimer = [NSTimer scheduledTimerWithTimeInterval:1.0 repeats:YES block:^(NSTimer *timer) {
+        StreamFrameViewController *strongSelf = weakSelf;
+        PhoneActionClient *client = strongSelf != nil ? strongSelf->_phoneClient : nil;
+        [client fetchCall:^(NSDictionary *call) {
+            if (call != nil) {
+                [[PhoneCallCenter shared] streamSawCalls:call gateway:client.base];
+            }
+        }];
+    }];
 }
 #endif
 
@@ -753,6 +765,8 @@ enum { kMicFrameBytes = 640 };              // 20 ms of 16 kHz mono s16
 #if !TARGET_OS_TV
         [_phoneStatusTimer invalidate];
         _phoneStatusTimer = nil;
+        [_phoneCallTimer invalidate];
+        _phoneCallTimer = nil;
         [_phoneClient invalidate];
         _phoneClient = nil;
         [_micUplink stop];

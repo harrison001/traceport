@@ -18,11 +18,35 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+/// Posted (object: host uuid) when an answered call wants that phone's stream opened.
+extern NSString *const TracePortOpenHostNotification;
+
+/// The host whose stream an answered call is waiting for (nil when none): the host list opens it
+/// as soon as it can — at once, or when the app comes to the front.
+extern NSString *_Nullable TracePortPendingCallHost;
+
 @interface PhoneActionClient : NSObject
 
 - (instancetype)initWithHost:(NSString *)host
                    httpsPort:(unsigned short)httpsPort
                   serverCert:(nullable NSData *)serverCert;
+
+/// A client for a gateway remembered earlier (`base` is its action port URL).
+- (instancetype)initWithBase:(NSString *)base serverCert:(nullable NSData *)serverCert;
+
+/// The action port URL, e.g. https://100.95.22.106:47184.
+@property (nonatomic, readonly) NSString *base;
+
+/// The host this gateway streams (set by the stream view): an answered call opens it.
+@property (nonatomic, copy, nullable) NSString *hostUuid;
+
+/// The phone's calls: {state: "idle" | "ringing" | "active", calls: [{id, state, number, name}]}.
+/// nil when unreachable. Main queue.
+- (void)fetchCall:(void (^)(NSDictionary *_Nullable call))completion;
+
+/// Answers ("answer") or hangs up ("hangup") the phone's call `callId`. Main queue; nil when
+/// unreachable, else {ok, error?}.
+- (void)callAction:(NSString *)action callId:(NSString *)callId completion:(void (^)(NSDictionary *_Nullable result))completion;
 
 /// Performs an action by name (home, apps, cc, notif, search, lock, shot, kill, back, swipeleft,
 /// swiperight). Called back on the main queue: `result` is the gateway's answer — "ok", "label",
@@ -48,12 +72,37 @@ NS_ASSUME_NONNULL_BEGIN
 /// The app delegate hands over the device token here; every live client then registers it.
 + (void)setPushToken:(NSData *)token;
 
+/// The same for the PushKit (VoIP) token that rings calls; also registered with every gateway
+/// remembered from earlier streams, so calls ring before the next stream.
++ (void)setVoipToken:(NSData *)token;
+
+/// Gateways remembered from streams: base → {cert, uuid}.
++ (NSDictionary<NSString *, NSDictionary *> *)knownGateways;
+
 /// Tells this gateway where to push (POST /phone/push), if iOS has given a token yet. Also done
 /// automatically when a token arrives later.
 - (void)registerPush;
 
 /// Must be called when done: the session holds this object until then.
 - (void)invalidate;
+
+@end
+
+/// Calls on the driven phone ring here like any phone call (2026-10-29): the gateway sends a VoIP
+/// push when one starts ringing (and while streaming, the stream view's polling finds it too); this
+/// shows the system's incoming-call screen through CallKit. Answer → the gateway answers on the
+/// phone and TracePort opens that phone's stream (the call's sound goes through the stream as
+/// always). Decline or end → the gateway hangs up.
+@interface PhoneCallCenter : NSObject
+
++ (instancetype)shared;
+
+/// At launch: PushKit has to be registered before the app finishes launching, or a push that
+/// woke it is lost.
+- (void)start;
+
+/// The stream view's latest /phone/call answer from the gateway at `base`.
+- (void)streamSawCalls:(NSDictionary *)call gateway:(NSString *)base;
 
 @end
 

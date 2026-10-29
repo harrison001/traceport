@@ -8,12 +8,19 @@
 #import "Utils.h"
 #include <Limelight.h>
 #import <UserNotifications/UserNotifications.h>
+#import <PushKit/PushKit.h>
+#import <CallKit/CallKit.h>
 
 /// The gateway's action port sits this far above the host's TLS port, one per Sunshine instance.
 static const unsigned short actionPortOffset = 200;
 
 static NSString *const pushTokenKey = @"TracePortPushToken";
 static NSString *const pushTokenNotification = @"TracePortPushTokenArrived";
+static NSString *const voipTokenKey = @"TracePortVoipToken";
+static NSString *const gatewaysKey = @"TracePortGateways";
+/// Posted (object: host uuid) when an answered call wants that phone's stream opened.
+NSString *const TracePortOpenHostNotification = @"TracePortOpenHost";
+NSString *TracePortPendingCallHost = nil;
 
 @interface PhoneActionClient () <NSURLSessionDelegate>
 @end
@@ -27,17 +34,21 @@ static NSString *const pushTokenNotification = @"TracePortPushTokenArrived";
 - (instancetype)initWithHost:(NSString *)host
                    httpsPort:(unsigned short)httpsPort
                   serverCert:(nullable NSData *)serverCert {
-    self = [super init];
-    if (self == nil) {
-        return nil;
-    }
-
     NSString *address = [Utils addressPortStringToAddress:host];
     // An IPv6 literal has to be bracketed in a URL, and Tailscale hands these out.
     if ([address containsString:@":"] && ![address hasPrefix:@"["]) {
         address = [NSString stringWithFormat:@"[%@]", address];
     }
-    _base = [NSString stringWithFormat:@"https://%@:%u", address, (unsigned)(httpsPort + actionPortOffset)];
+    return [self initWithBase:[NSString stringWithFormat:@"https://%@:%u", address, (unsigned)(httpsPort + actionPortOffset)]
+                   serverCert:serverCert];
+}
+
+- (instancetype)initWithBase:(NSString *)base serverCert:(nullable NSData *)serverCert {
+    self = [super init];
+    if (self == nil) {
+        return nil;
+    }
+    _base = [base copy];
     _serverCert = [serverCert copy];
 
     NSURLSessionConfiguration *configuration = [NSURLSessionConfiguration ephemeralSessionConfiguration];
@@ -65,14 +76,55 @@ static NSString *const pushTokenNotification = @"TracePortPushTokenArrived";
     }];
 }
 
-+ (void)setPushToken:(NSData *)token {
++ (NSString *)hex:(NSData *)token {
     NSMutableString *hex = [NSMutableString stringWithCapacity:token.length * 2];
     const unsigned char *bytes = token.bytes;
     for (NSUInteger i = 0; i < token.length; i++) {
         [hex appendFormat:@"%02x", bytes[i]];
     }
-    [[NSUserDefaults standardUserDefaults] setObject:hex forKey:pushTokenKey];
+    return hex;
+}
+
++ (void)setPushToken:(NSData *)token {
+    [[NSUserDefaults standardUserDefaults] setObject:[self hex:token] forKey:pushTokenKey];
     [[NSNotificationCenter defaultCenter] postNotificationName:pushTokenNotification object:nil];
+}
+
++ (void)setVoipToken:(NSData *)token {
+    NSString *hex = [self hex:token];
+    if ([hex isEqualToString:[[NSUserDefaults standardUserDefaults] stringForKey:voipTokenKey]]) {
+        return;
+    }
+    [[NSUserDefaults standardUserDefaults] setObject:hex forKey:voipTokenKey];
+    [[NSNotificationCenter defaultCenter] postNotificationName:pushTokenNotification object:nil];
+    // gateways from earlier streams learn it now, not at the next stream
+    [[self knownGateways] enumerateKeysAndObjectsUsingBlock:^(NSString *base, NSDictionary *g, BOOL *stop) {
+        PhoneActionClient *c = [[PhoneActionClient alloc] initWithBase:base serverCert:g[@"cert"]];
+        [c registerPush];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(20 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [c invalidate];
+        });
+    }];
+}
+
++ (NSDictionary<NSString *, NSDictionary *> *)knownGateways {
+    NSDictionary *d = [[NSUserDefaults standardUserDefaults] dictionaryForKey:gatewaysKey];
+    return [d isKindOfClass:[NSDictionary class]] ? d : @{};
+}
+
+/// Remember this gateway for calls between streams.
+- (void)remember {
+    if (_serverCert == nil) {
+        return;
+    }
+    NSMutableDictionary *all = [[PhoneActionClient knownGateways] mutableCopy];
+    NSMutableDictionary *g = [@{@"cert": _serverCert} mutableCopy];
+    NSString *uuid = self.hostUuid ?: all[_base][@"uuid"];
+    if (uuid != nil) {
+        g[@"uuid"] = uuid;
+    }
+    all[_base] = g;
+    [[NSUserDefaults standardUserDefaults] setObject:all forKey:gatewaysKey];
 }
 
 /// Which of Apple's push services this build's token belongs to: development-signed builds carry a
@@ -93,23 +145,49 @@ static NSString *const pushTokenNotification = @"TracePortPushTokenArrived";
 }
 
 - (void)registerPush {
-    NSString *token = [[NSUserDefaults standardUserDefaults] stringForKey:pushTokenKey];
-    if (token == nil || _session == nil) {
+    if (_session == nil) {
         return;
     }
-    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:
-                                    [NSURL URLWithString:[_base stringByAppendingString:@"/phone/push"]]];
-    request.HTTPMethod = @"POST";
-    [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
-    NSDictionary *body = @{@"token": token,
-                           @"env": [PhoneActionClient pushEnvironment],
-                           @"name": UIDevice.currentDevice.name ?: @""};
-    request.HTTPBody = [NSJSONSerialization dataWithJSONObject:body options:0 error:nil];
-    [self send:request completion:^(NSDictionary *result) {
-        if (result != nil) {
-            Log(LOG_I, @"Push: registered with the gateway (ready %@)", result[@"push_ready"]);
+    [self remember];
+    NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+    NSArray *kinds = @[@[pushTokenKey, @"alert"], @[voipTokenKey, @"voip"]];
+    for (NSArray *k in kinds) {
+        NSString *token = [d stringForKey:k[0]];
+        if (token == nil) {
+            continue;
         }
-    }];
+        NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:
+                                        [NSURL URLWithString:[_base stringByAppendingString:@"/phone/push"]]];
+        request.HTTPMethod = @"POST";
+        [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
+        NSDictionary *body = @{@"token": token,
+                               @"kind": k[1],
+                               @"env": [PhoneActionClient pushEnvironment],
+                               @"name": UIDevice.currentDevice.name ?: @""};
+        request.HTTPBody = [NSJSONSerialization dataWithJSONObject:body options:0 error:nil];
+        [self send:request completion:^(NSDictionary *result) {
+            if (result != nil) {
+                Log(LOG_I, @"Push: %@ token registered with the gateway (ready %@)", k[1], result[@"push_ready"]);
+            }
+        }];
+    }
+}
+
+- (void)fetchCall:(void (^)(NSDictionary *_Nullable))completion {
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:
+                                    [NSURL URLWithString:[_base stringByAppendingString:@"/phone/call"]]];
+    request.timeoutInterval = 3.0;
+    [self send:request completion:completion];
+}
+
+- (void)callAction:(NSString *)action callId:(NSString *)callId completion:(void (^)(NSDictionary *_Nullable))completion {
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:
+                                    [NSURL URLWithString:[_base stringByAppendingString:@"/phone/call"]]];
+    request.HTTPMethod = @"POST";
+    request.timeoutInterval = 8.0;
+    [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
+    request.HTTPBody = [NSJSONSerialization dataWithJSONObject:@{@"action": action, @"id": callId} options:0 error:nil];
+    [self send:request completion:completion];
 }
 
 - (void)invalidate {
@@ -166,6 +244,233 @@ static NSString *const pushTokenNotification = @"TracePortPushTokenArrived";
 didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge
  completionHandler:(void (^)(NSURLSessionAuthChallengeDisposition, NSURLCredential *_Nullable))completionHandler {
     [CaretTracker answerChallenge:challenge serverCert:_serverCert completionHandler:completionHandler];
+}
+
+@end
+
+#pragma mark - Calls
+
+@interface PhoneCallCenter () <PKPushRegistryDelegate, CXProviderDelegate>
+@end
+
+@implementation PhoneCallCenter {
+    PKPushRegistry *_registry;
+    CXProvider *_provider;
+    /// uuid → {gateway: base or NSNull, answered: BOOL, ringing: BOOL}
+    NSMutableDictionary<NSUUID *, NSMutableDictionary *> *_calls;
+}
+
++ (instancetype)shared {
+    static PhoneCallCenter *center;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ center = [[PhoneCallCenter alloc] init]; });
+    return center;
+}
+
+- (void)start {
+    if (_provider != nil) {
+        return;
+    }
+    _calls = [NSMutableDictionary dictionary];
+    CXProviderConfiguration *config = [[CXProviderConfiguration alloc] init];
+    config.supportsVideo = NO;
+    config.maximumCallGroups = 1;
+    config.maximumCallsPerCallGroup = 1;
+    config.supportedHandleTypes = [NSSet setWithObjects:@(CXHandleTypePhoneNumber), @(CXHandleTypeGeneric), nil];
+    // these are the phone at home's calls, not this device's: keep them out of its Recents
+    config.includesCallsInRecents = NO;
+    _provider = [[CXProvider alloc] initWithConfiguration:config];
+    [_provider setDelegate:self queue:dispatch_get_main_queue()];
+
+    _registry = [[PKPushRegistry alloc] initWithQueue:dispatch_get_main_queue()];
+    _registry.delegate = self;
+    _registry.desiredPushTypes = [NSSet setWithObject:PKPushTypeVoIP];
+}
+
+#pragma mark PushKit
+
+- (void)pushRegistry:(PKPushRegistry *)registry didUpdatePushCredentials:(PKPushCredentials *)credentials forType:(PKPushType)type {
+    Log(LOG_I, @"Calls: VoIP token ready");
+    [PhoneActionClient setVoipToken:credentials.token];
+}
+
+- (void)pushRegistry:(PKPushRegistry *)registry didReceiveIncomingPushWithPayload:(PKPushPayload *)payload
+             forType:(PKPushType)type withCompletionHandler:(void (^)(void))completion {
+    id call = payload.dictionaryPayload[@"call"];
+    Log(LOG_I, @"Calls: push %@", call);
+    [self event:[call isKindOfClass:[NSDictionary class]] ? call : @{} gateway:nil fromPush:YES completion:completion];
+}
+
+#pragma mark Events
+
+- (CXHandle *)handleFor:(NSDictionary *)call {
+    NSString *number = [call[@"number"] isKindOfClass:[NSString class]] ? call[@"number"] : @"";
+    return number.length > 0 ? [[CXHandle alloc] initWithType:CXHandleTypePhoneNumber value:number]
+                             : [[CXHandle alloc] initWithType:CXHandleTypeGeneric value:@"Unknown"];
+}
+
+/// One ring or end, from a push or from the stream's polling. A push must end in a reported call
+/// (iOS stops delivering VoIP pushes to an app that does not), so a push that changes nothing still
+/// reports one — the same UUID again is refused harmlessly, a new one is ended at once.
+- (void)event:(NSDictionary *)call gateway:(nullable NSString *)base fromPush:(BOOL)fromPush completion:(void (^)(void))completion {
+    NSString *type = [call[@"type"] isKindOfClass:[NSString class]] ? call[@"type"] : @"";
+    NSUUID *uuid = [call[@"id"] isKindOfClass:[NSString class]] ? [[NSUUID alloc] initWithUUIDString:call[@"id"]] : nil;
+    NSMutableDictionary *known = uuid ? _calls[uuid] : nil;
+
+    if ([type isEqualToString:@"ring"] && uuid != nil && known == nil) {
+        NSString *name = [call[@"name"] isKindOfClass:[NSString class]] ? call[@"name"] : @"";
+        NSString *number = [call[@"number"] isKindOfClass:[NSString class]] ? call[@"number"] : @"";
+        CXCallUpdate *update = [[CXCallUpdate alloc] init];
+        update.remoteHandle = [self handleFor:call];
+        update.localizedCallerName = [NSString stringWithFormat:@"%@ · home phone",
+                                      name.length > 0 ? name : (number.length > 0 ? number : @"Unknown")];
+        update.hasVideo = NO;
+        update.supportsHolding = NO;
+        update.supportsGrouping = NO;
+        update.supportsUngrouping = NO;
+        update.supportsDTMF = NO;
+        _calls[uuid] = [@{@"gateway": base ?: (id)[NSNull null], @"answered": @NO, @"ringing": @YES} mutableCopy];
+        [_provider reportNewIncomingCallWithUUID:uuid update:update completion:^(NSError *error) {
+            if (error != nil) {
+                Log(LOG_W, @"Calls: could not ring (%@)", error.localizedDescription);
+                [self->_calls removeObjectForKey:uuid];
+            }
+            completion();
+        }];
+        return;
+    }
+
+    if ([type isEqualToString:@"end"] && known != nil) {
+        NSString *why = [call[@"why"] isKindOfClass:[NSString class]] ? call[@"why"] : @"ended";
+        // finish with the push while the call still exists (that satisfies PushKit), then end it
+        completion();
+        if ([why isEqualToString:@"answered"] && [known[@"answered"] boolValue]) {
+            // the phone picked up because we asked: the call goes on
+            known[@"ringing"] = @NO;
+            return;
+        }
+        CXCallEndedReason reason = [why isEqualToString:@"missed"] ? CXCallEndedReasonUnanswered
+                                 : [why isEqualToString:@"answered"] ? CXCallEndedReasonAnsweredElsewhere
+                                 : CXCallEndedReasonRemoteEnded;
+        [_provider reportCallWithUUID:uuid endedAtDate:nil reason:reason];
+        [_calls removeObjectForKey:uuid];
+        return;
+    }
+    if (known != nil) {
+        // a repeated ring for a call already showing
+        completion();
+        return;
+    }
+
+    if (!fromPush) {
+        completion();
+        return;
+    }
+    NSUUID *placeholder = uuid ?: [NSUUID UUID];
+    CXCallUpdate *update = [[CXCallUpdate alloc] init];
+    update.remoteHandle = [self handleFor:call];
+    [_provider reportNewIncomingCallWithUUID:placeholder update:update completion:^(NSError *error) {
+        if (error == nil) {
+            [self->_provider reportCallWithUUID:placeholder endedAtDate:nil reason:CXCallEndedReasonRemoteEnded];
+        }
+        completion();
+    }];
+}
+
+- (void)streamSawCalls:(NSDictionary *)state gateway:(NSString *)base {
+    NSArray *calls = [state[@"calls"] isKindOfClass:[NSArray class]] ? state[@"calls"] : @[];
+    NSMutableSet<NSUUID *> *present = [NSMutableSet set];
+    for (id c in calls) {
+        if (![c isKindOfClass:[NSDictionary class]] || ![c[@"id"] isKindOfClass:[NSString class]]) {
+            continue;
+        }
+        NSUUID *uuid = [[NSUUID alloc] initWithUUIDString:c[@"id"]];
+        if (uuid == nil) {
+            continue;
+        }
+        [present addObject:uuid];
+        NSString *st = [c[@"state"] isKindOfClass:[NSString class]] ? c[@"state"] : @"";
+        BOOL ringing = [st isEqualToString:@"incoming"] || [st isEqualToString:@"waiting"];
+        NSMutableDictionary *known = _calls[uuid];
+        if (ringing && known == nil) {
+            NSMutableDictionary *ev = [c mutableCopy];
+            ev[@"type"] = @"ring";
+            [self event:ev gateway:base fromPush:NO completion:^{}];
+        } else if (!ringing && known != nil && [known[@"ringing"] boolValue]) {
+            [self event:@{@"type": @"end", @"id": c[@"id"], @"why": @"answered"} gateway:base fromPush:NO completion:^{}];
+        }
+    }
+    for (NSUUID *uuid in _calls.allKeys) {
+        if (![present containsObject:uuid]) {
+            NSString *why = [_calls[uuid][@"ringing"] boolValue] ? @"missed" : @"ended";
+            [self event:@{@"type": @"end", @"id": uuid.UUIDString, @"why": why} gateway:base fromPush:NO completion:^{}];
+        }
+    }
+}
+
+/// Ask the call's gateway (or each remembered one) to answer or hang up.
+- (void)control:(NSString *)action uuid:(NSUUID *)uuid done:(void (^)(BOOL ok, NSString *_Nullable hostUuid))done {
+    id gw = _calls[uuid][@"gateway"];
+    NSArray<NSString *> *bases = [gw isKindOfClass:[NSString class]] ? @[gw] : [PhoneActionClient knownGateways].allKeys;
+    [self control:action uuid:uuid bases:bases index:0 done:done];
+}
+
+- (void)control:(NSString *)action uuid:(NSUUID *)uuid bases:(NSArray<NSString *> *)bases index:(NSUInteger)i
+           done:(void (^)(BOOL ok, NSString *_Nullable hostUuid))done {
+    if (i >= bases.count) {
+        done(NO, nil);
+        return;
+    }
+    NSDictionary *g = [PhoneActionClient knownGateways][bases[i]];
+    PhoneActionClient *c = [[PhoneActionClient alloc] initWithBase:bases[i] serverCert:g[@"cert"]];
+    [c callAction:action callId:uuid.UUIDString completion:^(NSDictionary *result) {
+        [c invalidate];
+        if ([result[@"ok"] boolValue]) {
+            Log(LOG_I, @"Calls: %@ → %@", action, result[@"done"]);
+            done(YES, g[@"uuid"]);
+        } else {
+            Log(LOG_W, @"Calls: %@ at %@ failed: %@", action, bases[i], result[@"error"] ?: @"unreachable");
+            [self control:action uuid:uuid bases:bases index:i + 1 done:done];
+        }
+    }];
+}
+
+#pragma mark CXProviderDelegate
+
+- (void)providerDidReset:(CXProvider *)provider {
+    [_calls removeAllObjects];
+}
+
+- (void)provider:(CXProvider *)provider performAnswerCallAction:(CXAnswerCallAction *)action {
+    NSMutableDictionary *call = _calls[action.callUUID];
+    call[@"answered"] = @YES;
+    [self control:@"answer" uuid:action.callUUID done:^(BOOL ok, NSString *hostUuid) {
+        if (!ok) {
+            [action fail];
+            [self->_calls removeObjectForKey:action.callUUID];
+            return;
+        }
+        [action fulfill];
+        // the call's sound comes through the phone's stream: open it
+        if (hostUuid != nil) {
+            TracePortPendingCallHost = hostUuid;
+            [[NSNotificationCenter defaultCenter] postNotificationName:TracePortOpenHostNotification object:hostUuid];
+        }
+    }];
+}
+
+- (void)provider:(CXProvider *)provider performEndCallAction:(CXEndCallAction *)action {
+    BOOL tracked = _calls[action.callUUID] != nil;
+    [action fulfill];
+    if (!tracked) {
+        return;
+    }
+    [self control:@"hangup" uuid:action.callUUID done:^(BOOL ok, NSString *hostUuid) {}];
+    [_calls removeObjectForKey:action.callUUID];
+}
+
+- (void)provider:(CXProvider *)provider didActivateAudioSession:(AVAudioSession *)audioSession {
+    // the stream plays the call's sound and TPMicUplink records the reply in this same session
 }
 
 @end

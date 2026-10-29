@@ -7,6 +7,7 @@
 
 @import ImageIO;
 
+#import "PhoneActionClient.h"
 #import "HostSettingsViewController.h"
 #import "MainFrameViewController.h"
 #import "CryptoManager.h"
@@ -1308,11 +1309,41 @@ static NSMutableSet* hostList;
     }
 }
 
+#if !TARGET_OS_TV
+/// An answered call (PhoneCallCenter) waits for its phone's stream: open it if we can now —
+/// the host list in front and the app active — else when the app next comes to the front.
+- (void)openPendingCallHost {
+    NSString *uuid = TracePortPendingCallHost;
+    if (uuid == nil || _background || self.navigationController.topViewController != self ||
+        [UIApplication sharedApplication].applicationState != UIApplicationStateActive) {
+        return;
+    }
+    for (TemporaryHost *host in hostList) {
+        if (![host.uuid isEqualToString:uuid]) {
+            continue;
+        }
+        TracePortPendingCallHost = nil;
+        TemporaryApp *app = [self findRunningApp:host] ?: [host.appList anyObject];
+        if (app == nil || host.pairState != PairStatePaired) {
+            [self hostClicked:host view:nil];
+            return;
+        }
+        Log(LOG_I, @"Calls: opening %@ for the answered call", host.name);
+        [self prepareToStreamApp:app];
+        [self beginStreamSegue];
+        return;
+    }
+}
+#endif
+
 -(void)handleReturnToForeground
 {
     _background = NO;
     
     [self beginForegroundRefresh];
+#if !TARGET_OS_TV
+    [self openPendingCallHost];
+#endif
     
     // Check for a pending shortcut action when returning to foreground
     [self handlePendingShortcutAction];
@@ -1348,6 +1379,11 @@ static NSMutableSet* hostList;
     
     // Check for a pending shortcut action when appearing
     [self handlePendingShortcutAction];
+#if !TARGET_OS_TV
+    [self openPendingCallHost];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(openPendingCallHost)
+                                                 name:TracePortOpenHostNotification object:nil];
+#endif
     
     [[NSNotificationCenter defaultCenter] addObserver: self
                                              selector: @selector(handleReturnToForeground)

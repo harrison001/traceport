@@ -86,6 +86,8 @@ static NSString* DB_NAME = @"Limelight_iOS.sqlite";
         _pcUuidToLoad = (NSString*)[shortcut.userInfo objectForKey:@"UUID"];
     }
     [UNUserNotificationCenter currentNotificationCenter].delegate = self;
+    // the phone at home's calls ring here (VoIP pushes have to be registered for at launch)
+    [[PhoneCallCenter shared] start];
     // Already allowed earlier: refresh the token every launch (it can change)
     [[UNUserNotificationCenter currentNotificationCenter] getNotificationSettingsWithCompletionHandler:^(UNNotificationSettings *settings) {
         if (settings.authorizationStatus == UNAuthorizationStatusAuthorized) {
