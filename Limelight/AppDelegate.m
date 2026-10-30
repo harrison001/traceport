@@ -109,6 +109,18 @@ static NSString* DB_NAME = @"Limelight_iOS.sqlite";
     NSLog(@"Push: registration failed: %@", error.localizedDescription);
 }
 
+// A tapped call notice (a call a Focus silenced) opens that phone's stream
+- (void)userNotificationCenter:(UNUserNotificationCenter *)center
+didReceiveNotificationResponse:(UNNotificationResponse *)response
+         withCompletionHandler:(void (^)(void))completionHandler {
+    NSString *host = response.notification.request.content.userInfo[@"openHost"];
+    if ([host isKindOfClass:[NSString class]]) {
+        TracePortPendingCallHost = host;
+        [[NSNotificationCenter defaultCenter] postNotificationName:TracePortOpenHostNotification object:host];
+    }
+    completionHandler();
+}
+
 // Gateway alerts show as banners even while TracePort is in front
 - (void)userNotificationCenter:(UNUserNotificationCenter *)center
        willPresentNotification:(UNNotification *)notification

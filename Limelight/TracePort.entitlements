@@ -6,5 +6,8 @@
 	     through Apple's sandbox; an App Store export rewrites this to production) -->
 	<key>aps-environment</key>
 	<string>development</string>
+	<!-- A call that a Focus silences leaves a time-sensitive notice (PhoneCallCenter) -->
+	<key>com.apple.developer.usernotifications.time-sensitive</key>
+	<true/>
 </dict>
 </plist>

@@ -342,10 +342,22 @@ didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge
             if (error != nil) {
                 Log(LOG_W, @"Calls: could not ring (%@)", error.localizedDescription);
                 [self->_calls removeObjectForKey:uuid];
+                // A Focus on this device keeps CallKit from ringing (2026-10-30: error 3, the call
+                // went unnoticed). Leave a time-sensitive notice instead; the user decides in the
+                // Focus settings whether it may break through.
+                if ([error.domain isEqualToString:CXErrorDomainIncomingCall] &&
+                    error.code == CXErrorCodeIncomingCallErrorFilteredByDoNotDisturb) {
+                    [self postSilencedNotice:call gateway:base];
+                }
             }
             completion();
         }];
         return;
+    }
+
+    if ([type isEqualToString:@"end"] && uuid != nil) {
+        // a notice left for a call that a Focus silenced goes once the call is over
+        [[UNUserNotificationCenter currentNotificationCenter] removeDeliveredNotificationsWithIdentifiers:@[uuid.UUIDString]];
     }
 
     if ([type isEqualToString:@"end"] && known != nil) {
@@ -382,6 +394,40 @@ didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge
             [self->_provider reportCallWithUUID:placeholder endedAtDate:nil reason:CXCallEndedReasonRemoteEnded];
         }
         completion();
+    }];
+}
+
+/// The notice shown instead of the ring when a Focus silenced the call. Tapping it opens the
+/// phone's stream, where the call is still ringing (and rings here too once TracePort is in front).
+- (void)postSilencedNotice:(NSDictionary *)call gateway:(nullable NSString *)base {
+    NSString *name = [call[@"name"] isKindOfClass:[NSString class]] ? call[@"name"] : @"";
+    NSString *number = [call[@"number"] isKindOfClass:[NSString class]] ? call[@"number"] : @"";
+    NSString *who = name.length > 0 ? name : (number.length > 0 ? number : @"Someone");
+    BOOL wechat = [call[@"source"] isEqual:@"wechat"];
+
+    NSDictionary<NSString *, NSDictionary *> *gateways = [PhoneActionClient knownGateways];
+    NSString *host = base != nil ? gateways[base][@"uuid"] : nil;
+    for (NSDictionary *g in gateways.allValues) {
+        if (host == nil && [g[@"uuid"] isKindOfClass:[NSString class]]) {
+            host = g[@"uuid"];
+        }
+    }
+
+    UNMutableNotificationContent *content = [[UNMutableNotificationContent alloc] init];
+    content.title = wechat ? @"WeChat call · home phone" : @"Incoming call · home phone";
+    content.body = [NSString stringWithFormat:@"%@ is calling. Focus silenced the ring — tap to open the phone and answer.", who];
+    content.sound = [UNNotificationSound defaultSound];
+    content.threadIdentifier = @"traceport-calls";
+    if (host != nil) {
+        content.userInfo = @{@"openHost": host};
+    }
+    if (@available(iOS 15.0, *)) {
+        content.interruptionLevel = UNNotificationInterruptionLevelTimeSensitive;
+    }
+    NSString *ident = [call[@"id"] isKindOfClass:[NSString class]] ? call[@"id"] : [NSUUID UUID].UUIDString;
+    UNNotificationRequest *request = [UNNotificationRequest requestWithIdentifier:ident content:content trigger:nil];
+    [[UNUserNotificationCenter currentNotificationCenter] addNotificationRequest:request withCompletionHandler:^(NSError *error) {
+        Log(error ? LOG_W : LOG_I, @"Calls: Focus silenced the ring; notice %@", error ? error.localizedDescription : @"posted");
     }];
 }
 
