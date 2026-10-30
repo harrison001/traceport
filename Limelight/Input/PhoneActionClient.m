@@ -259,6 +259,9 @@ didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge
     /// uuid → {gateway: base or NSNull, answered: BOOL, ringing: BOOL}
     NSMutableDictionary<NSUUID *, NSMutableDictionary *> *_calls;
     NSDate *_handedOff;
+    /// calls that just ended here (declined, hung up, handed to the stream) → when. The stream's
+    /// polling can still see such a call on the gateway for a moment; it must not ring again.
+    NSMutableDictionary<NSUUID *, NSDate *> *_ended;
 }
 
 + (instancetype)shared {
@@ -273,6 +276,7 @@ didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge
         return;
     }
     _calls = [NSMutableDictionary dictionary];
+    _ended = [NSMutableDictionary dictionary];
     CXProviderConfiguration *config = [[CXProviderConfiguration alloc] init];
     config.supportsVideo = NO;
     config.maximumCallGroups = 1;
@@ -374,6 +378,7 @@ didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge
                                  : CXCallEndedReasonRemoteEnded;
         [_provider reportCallWithUUID:uuid endedAtDate:nil reason:reason];
         [_calls removeObjectForKey:uuid];
+        _ended[uuid] = [NSDate date];
         return;
     }
     if (known != nil) {
@@ -446,6 +451,9 @@ didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge
         NSString *st = [c[@"state"] isKindOfClass:[NSString class]] ? c[@"state"] : @"";
         BOOL ringing = [st isEqualToString:@"incoming"] || [st isEqualToString:@"waiting"];
         NSMutableDictionary *known = _calls[uuid];
+        if (ringing && known == nil && [self endedRecently:uuid]) {
+            continue; // finished here a moment ago; the gateway has not caught up yet
+        }
         if (ringing && known == nil) {
             NSMutableDictionary *ev = [c mutableCopy];
             ev[@"type"] = @"ring";
@@ -495,7 +503,11 @@ didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge
         if ([_calls[uuid][@"answered"] boolValue]) {
             Log(LOG_I, @"Calls: handing %@ to the stream", uuid.UUIDString);
             [_provider reportCallWithUUID:uuid endedAtDate:nil reason:CXCallEndedReasonAnsweredElsewhere];
+            // tell the gateway, so the call's end does not come back as a push (which PushKit
+            // would make us show as one more ring)
+            [self control:@"release" uuid:uuid done:^(BOOL ok, NSString *hostUuid) {}];
             [_calls removeObjectForKey:uuid];
+            _ended[uuid] = [NSDate date];
             any = YES;
         }
     }
@@ -503,6 +515,16 @@ didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge
         _handedOff = [NSDate date];
     }
     return any;
+}
+
+- (BOOL)endedRecently:(NSUUID *)uuid {
+    NSDate *at = _ended[uuid];
+    for (NSUUID *u in _ended.allKeys) {
+        if (-[_ended[u] timeIntervalSinceNow] > 60) {
+            [_ended removeObjectForKey:u];
+        }
+    }
+    return at != nil && -[at timeIntervalSinceNow] <= 60;
 }
 
 - (NSTimeInterval)secondsSinceHandOff {
@@ -542,6 +564,7 @@ didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge
 
 - (void)provider:(CXProvider *)provider performEndCallAction:(CXEndCallAction *)action {
     BOOL tracked = _calls[action.callUUID] != nil;
+    _ended[action.callUUID] = [NSDate date];
     [action fulfill];
     if (!tracked) {
         return;
