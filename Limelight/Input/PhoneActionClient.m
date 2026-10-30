@@ -470,31 +470,43 @@ didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge
     }
 }
 
-/// Ask the call's gateway (or each remembered one) to answer or hang up.
+/// Ask the call's gateway to answer or hang up. A call that came by push does not say which
+/// address the gateway has here (2026-10-30: the same gateway is remembered by its Tailscale and
+/// its LAN address); asking them one after the other let a hang-up wait 15 s for a reply lost on
+/// the Tailscale path. So every address is asked at once and the first to succeed wins; the others'
+/// answers ("no such call", once it is done) are ignored.
 - (void)control:(NSString *)action uuid:(NSUUID *)uuid done:(void (^)(BOOL ok, NSString *_Nullable hostUuid))done {
+    NSDictionary<NSString *, NSDictionary *> *all = [PhoneActionClient knownGateways];
     id gw = _calls[uuid][@"gateway"];
-    NSArray<NSString *> *bases = [gw isKindOfClass:[NSString class]] ? @[gw] : [PhoneActionClient knownGateways].allKeys;
-    [self control:action uuid:uuid bases:bases index:0 done:done];
-}
-
-- (void)control:(NSString *)action uuid:(NSUUID *)uuid bases:(NSArray<NSString *> *)bases index:(NSUInteger)i
-           done:(void (^)(BOOL ok, NSString *_Nullable hostUuid))done {
-    if (i >= bases.count) {
+    NSArray<NSString *> *bases = [gw isKindOfClass:[NSString class]] ? @[gw] : all.allKeys;
+    if (bases.count == 0) {
         done(NO, nil);
         return;
     }
-    NSDictionary *g = [PhoneActionClient knownGateways][bases[i]];
-    PhoneActionClient *c = [[PhoneActionClient alloc] initWithBase:bases[i] serverCert:g[@"cert"]];
-    [c callAction:action callId:uuid.UUIDString completion:^(NSDictionary *result) {
-        [c invalidate];
-        if ([result[@"ok"] boolValue]) {
-            Log(LOG_I, @"Calls: %@ → %@", action, result[@"done"]);
-            done(YES, g[@"uuid"]);
-        } else {
-            Log(LOG_W, @"Calls: %@ at %@ failed: %@", action, bases[i], result[@"error"] ?: @"unreachable");
-            [self control:action uuid:uuid bases:bases index:i + 1 done:done];
-        }
-    }];
+    __block BOOL finished = NO;
+    __block NSUInteger pending = bases.count;
+    for (NSString *base in bases) {
+        NSDictionary *g = all[base];
+        PhoneActionClient *c = [[PhoneActionClient alloc] initWithBase:base serverCert:g[@"cert"]];
+        [c callAction:action callId:uuid.UUIDString completion:^(NSDictionary *result) {
+            [c invalidate];
+            pending--;
+            if (finished) {
+                return;
+            }
+            if ([result[@"ok"] boolValue]) {
+                finished = YES;
+                Log(LOG_I, @"Calls: %@ → %@ (%@)", action, result[@"done"], base);
+                done(YES, g[@"uuid"]);
+            } else {
+                Log(LOG_W, @"Calls: %@ at %@ failed: %@", action, base, result[@"error"] ?: @"unreachable");
+                if (pending == 0) {
+                    finished = YES;
+                    done(NO, nil);
+                }
+            }
+        }];
+    }
 }
 
 - (BOOL)handOffAnsweredCalls {
