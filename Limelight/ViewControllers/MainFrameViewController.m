@@ -1322,12 +1322,23 @@ static NSMutableSet* hostList;
         if (![host.uuid isEqualToString:uuid]) {
             continue;
         }
-        TracePortPendingCallHost = nil;
         TemporaryApp *app = [self findRunningApp:host] ?: [host.appList anyObject];
         if (app == nil || host.pairState != PairStatePaired) {
+            TracePortPendingCallHost = nil;
             [self hostClicked:host view:nil];
             return;
         }
+        // The system call has to have let go of the audio session first, or the stream's audio
+        // fails to start ("Session activation failed", 2026-10-29)
+        [[PhoneCallCenter shared] handOffAnsweredCalls];
+        NSTimeInterval wait = 0.8 - [[PhoneCallCenter shared] secondsSinceHandOff];
+        if (wait > 0) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(wait * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                [self openPendingCallHost];
+            });
+            return;
+        }
+        TracePortPendingCallHost = nil;
         Log(LOG_I, @"Calls: opening %@ for the answered call", host.name);
         [self prepareToStreamApp:app];
         [self beginStreamSegue];

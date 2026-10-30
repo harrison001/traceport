@@ -104,6 +104,15 @@ extern NSString *_Nullable TracePortPendingCallHost;
 /// The stream view's latest /phone/call answer from the gateway at `base`.
 - (void)streamSawCalls:(NSDictionary *)call gateway:(NSString *)base;
 
+/// Ends the system calls of answered calls: their sound goes through the phone's stream, and the
+/// stream cannot start its audio while a CallKit call holds the audio session ("Session activation
+/// failed", 2026-10-29). Done when TracePort is in front. Returns whether any was ended.
+- (BOOL)handOffAnsweredCalls;
+
+/// Seconds since the last hand-off (a large number if never): the stream waits for the audio
+/// session to be released before it starts.
+- (NSTimeInterval)secondsSinceHandOff;
+
 @end
 
 NS_ASSUME_NONNULL_END

@@ -258,6 +258,7 @@ didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge
     CXProvider *_provider;
     /// uuid → {gateway: base or NSNull, answered: BOOL, ringing: BOOL}
     NSMutableDictionary<NSUUID *, NSMutableDictionary *> *_calls;
+    NSDate *_handedOff;
 }
 
 + (instancetype)shared {
@@ -281,6 +282,10 @@ didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge
     config.includesCallsInRecents = NO;
     _provider = [[CXProvider alloc] initWithConfiguration:config];
     [_provider setDelegate:self queue:dispatch_get_main_queue()];
+
+    // an answered call waiting in the background is handed to the stream when TracePort comes to the front
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(handOffAnsweredCalls)
+                                                 name:UIApplicationDidBecomeActiveNotification object:nil];
 
     _registry = [[PKPushRegistry alloc] initWithQueue:dispatch_get_main_queue()];
     _registry.delegate = self;
@@ -438,6 +443,26 @@ didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge
     }];
 }
 
+- (BOOL)handOffAnsweredCalls {
+    BOOL any = NO;
+    for (NSUUID *uuid in _calls.allKeys) {
+        if ([_calls[uuid][@"answered"] boolValue]) {
+            Log(LOG_I, @"Calls: handing %@ to the stream", uuid.UUIDString);
+            [_provider reportCallWithUUID:uuid endedAtDate:nil reason:CXCallEndedReasonAnsweredElsewhere];
+            [_calls removeObjectForKey:uuid];
+            any = YES;
+        }
+    }
+    if (any) {
+        _handedOff = [NSDate date];
+    }
+    return any;
+}
+
+- (NSTimeInterval)secondsSinceHandOff {
+    return _handedOff ? -[_handedOff timeIntervalSinceNow] : 1e9;
+}
+
 #pragma mark CXProviderDelegate
 
 - (void)providerDidReset:(CXProvider *)provider {
@@ -454,9 +479,16 @@ didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge
             return;
         }
         [action fulfill];
-        // the call's sound comes through the phone's stream: open it
+        // the call's sound comes through the phone's stream: open it. In front, the system call
+        // steps aside right away; in the background or locked it stays (the green call indicator
+        // leads back to TracePort) until TracePort comes to the front.
         if (hostUuid != nil) {
             TracePortPendingCallHost = hostUuid;
+        }
+        if ([UIApplication sharedApplication].applicationState == UIApplicationStateActive) {
+            [self handOffAnsweredCalls];
+        }
+        if (hostUuid != nil) {
             [[NSNotificationCenter defaultCenter] postNotificationName:TracePortOpenHostNotification object:hostUuid];
         }
     }];
@@ -470,6 +502,10 @@ didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge
     }
     [self control:@"hangup" uuid:action.callUUID done:^(BOOL ok, NSString *hostUuid) {}];
     [_calls removeObjectForKey:action.callUUID];
+}
+
+- (void)provider:(CXProvider *)provider didDeactivateAudioSession:(AVAudioSession *)audioSession {
+    Log(LOG_I, @"Calls: audio session released");
 }
 
 - (void)provider:(CXProvider *)provider didActivateAudioSession:(AVAudioSession *)audioSession {
