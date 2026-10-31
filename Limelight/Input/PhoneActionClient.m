@@ -333,7 +333,8 @@ didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge
         update.remoteHandle = [self handleFor:call];
         // who and through what: "Alice · WeChat" for a WeChat invite, "+1 555… · home phone" for a call
         NSString *source = [call[@"source"] isKindOfClass:[NSString class]] ? call[@"source"] : @"";
-        NSString *via = [source isEqualToString:@"wechat"] ? @"WeChat" : @"home phone";
+        BOOL video = [call[@"kind"] isEqual:@"video"];
+        NSString *via = [source isEqualToString:@"wechat"] ? (video ? @"WeChat video" : @"WeChat") : @"home phone";
         update.localizedCallerName = [NSString stringWithFormat:@"%@ · %@",
                                       name.length > 0 ? name : (number.length > 0 ? number : @"Unknown"), via];
         update.hasVideo = NO;
@@ -419,7 +420,8 @@ didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge
     }
 
     UNMutableNotificationContent *content = [[UNMutableNotificationContent alloc] init];
-    content.title = wechat ? @"WeChat call · home phone" : @"Incoming call · home phone";
+    BOOL video = [call[@"kind"] isEqual:@"video"];
+    content.title = wechat ? (video ? @"WeChat video call · home phone" : @"WeChat call · home phone") : @"Incoming call · home phone";
     content.body = [NSString stringWithFormat:@"%@ is calling. Focus silenced the ring — tap to open the phone and answer.", who];
     content.sound = [UNNotificationSound defaultSound];
     content.threadIdentifier = @"traceport-calls";
