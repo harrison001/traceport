@@ -176,7 +176,7 @@ NSString *TracePortPendingCallHost = nil;
 - (void)fetchCall:(void (^)(NSDictionary *_Nullable))completion {
     NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:
                                     [NSURL URLWithString:[_base stringByAppendingString:@"/phone/call"]]];
-    request.timeoutInterval = 3.0;
+    request.timeoutInterval = 6.0; // the stream polls one at a time, so a slow answer is still worth waiting for
     [self send:request completion:completion];
 }
 

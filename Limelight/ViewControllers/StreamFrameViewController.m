@@ -259,6 +259,8 @@ enum { kMicFrameBytes = 640 };              // 20 ms of 16 kHz mono s16
     PhoneActionClient *_phoneClient;                     // phone host: asks the gateway to do the dock's actions
     NSTimer *_phoneStatusTimer;                          // and, every few seconds, what it can do right now
     NSTimer *_phoneCallTimer;                            // every second: is the phone ringing (PhoneCallCenter)
+    BOOL _callPollPending;                               // the last call poll has not come back yet
+    NSString *_gatewayCallState;                         // idle / ringing / active, from the last call poll
 #endif
 }
 
@@ -750,7 +752,20 @@ enum { kMicFrameBytes = 640 };              // 20 ms of 16 kHz mono s16
     _phoneCallTimer = [NSTimer scheduledTimerWithTimeInterval:1.0 repeats:YES block:^(NSTimer *timer) {
         StreamFrameViewController *strongSelf = weakSelf;
         PhoneActionClient *client = strongSelf != nil ? strongSelf->_phoneClient : nil;
+        // On a slow link a poll can take seconds (each one is a new TLS handshake); stacking more
+        // on top only makes every one of them time out (11-01: 150 in 45 min over cellular)
+        if (client == nil || strongSelf->_callPollPending) {
+            return;
+        }
+        strongSelf->_callPollPending = YES;
         [client fetchCall:^(NSDictionary *call) {
+            StreamFrameViewController *again = weakSelf;
+            if (again != nil) {
+                again->_callPollPending = NO;
+                if (call != nil && [call[@"state"] isKindOfClass:[NSString class]]) {
+                    again->_gatewayCallState = call[@"state"];
+                }
+            }
             if (call != nil) {
                 [[PhoneCallCenter shared] streamSawCalls:call gateway:client.base];
             }
@@ -890,6 +905,21 @@ enum { kMicFrameBytes = 640 };              // 20 ms of 16 kHz mono s16
 #endif
 }
 
+- (void)backgroundCheck:(NSTimer *)timer {
+#if !TARGET_OS_TV
+    BOOL inCall = (_gatewayCallState != nil && ![_gatewayCallState isEqualToString:@"idle"]) || _micUplink.running;
+#else
+    BOOL inCall = NO;
+#endif
+    if ([VideoDecoderRenderer pictureInPictureActive] || inCall) {
+        return;
+    }
+    Log(LOG_I, @"In the background with no Picture in Picture and no call; ending the stream");
+    [timer invalidate];
+    _inactivityTimer = nil;
+    [self returnToMainFrame];
+}
+
 - (void)inactiveTimerExpired:(NSTimer*)timer {
     Log(LOG_I, @"Terminating stream after inactivity");
 
@@ -913,8 +943,19 @@ enum { kMicFrameBytes = 640 };              // 20 ms of 16 kHz mono s16
 // This fires when the home button is pressed
 - (void)applicationDidEnterBackground:(UIApplication *)application {
     if ([VideoDecoderRenderer pictureInPicturePossible] || [VideoDecoderRenderer pictureInPictureActive]) {
-        // Picture in Picture keeps the stream (and the connection) going while the app is away
-        Log(LOG_I, @"Backgrounded with Picture in Picture; keeping the stream");
+        // Picture in Picture keeps the stream (and the connection) going while the app is away.
+        // Locking the screen lands here too, with no Picture in Picture: check every minute and
+        // end the stream unless it is on screen or a call is going on (11-01: a locked phone
+        // kept streaming for 6 hours, asking for a keyframe every few seconds).
+        Log(LOG_I, @"Backgrounded with Picture in Picture possible; keeping the stream while it is in use");
+        if (_inactivityTimer != nil) {
+            [_inactivityTimer invalidate];
+        }
+        _inactivityTimer = [NSTimer scheduledTimerWithTimeInterval:60
+                                                            target:self
+                                                          selector:@selector(backgroundCheck:)
+                                                          userInfo:nil
+                                                           repeats:YES];
         return;
     }
     Log(LOG_I, @"Terminating stream immediately for backgrounding");
