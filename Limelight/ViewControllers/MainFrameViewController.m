@@ -1114,6 +1114,10 @@ static NSMutableSet* hostList;
     // If we moved back to the center position, we should save the settings
     if (position == FrontViewPositionLeft) {
         [(SettingsViewController*)[revealController rearViewController] saveSettings];
+        [self.view removeGestureRecognizer:revealController.tapGestureRecognizer];
+    } else {
+        // the strip of the host list still showing closes the settings when tapped
+        [self.view addGestureRecognizer:revealController.tapGestureRecognizer];
     }
     
     currentPosition = position;
@@ -1165,11 +1169,22 @@ static NSMutableSet* hostList;
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
 
+#if !TARGET_OS_TV
+    // The settings pane was sized for landscape (510 pt). On an upright iPhone that is wider than
+    // the screen: the pane was cut off and covered the host list entirely, leaving nothing to tap
+    // to close it. Keep a strip of the host list showing; tapping it closes the pane.
+    CGFloat w = self.view.bounds.size.width;
+    self.revealViewController.rearViewRevealWidth = MIN(510.0, w - 56.0);
+#endif
+
     if (hostScrollView == nil) {
         return;
     }
     UINavigationBar* bar = self.navigationController.navigationBar;
-    CGRect frame = CGRectMake(0, bar.frame.origin.y + bar.frame.size.height, self.view.frame.size.width, self.view.frame.size.height / 2);
+    CGFloat top = bar.frame.origin.y + bar.frame.size.height;
+    // Upright, the hosts are a column: the scroll view takes the rest of the screen
+    CGFloat height = [self hostsInColumn] ? self.view.frame.size.height - top : self.view.frame.size.height / 2;
+    CGRect frame = CGRectMake(0, top, self.view.frame.size.width, height);
     if (!CGRectEqualToRect(hostScrollView.frame, frame)) {
         hostScrollView.frame = frame;
         [self updateHosts];
@@ -1420,6 +1435,14 @@ static NSMutableSet* hostList;
     
     // Check for a pending shortcut action when appearing
     [self handlePendingShortcutAction];
+#if DEBUG && !TARGET_OS_TV
+    // simulator screenshots of the settings pane: launch with -TPDebugOpenSettings YES
+    if ([[NSUserDefaults standardUserDefaults] boolForKey:@"TPDebugOpenSettings"] && currentPosition == FrontViewPositionLeft) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [self.revealViewController revealToggleAnimated:NO];
+        });
+    }
+#endif
 #if !TARGET_OS_TV
     [self openPendingCallHost];
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(openPendingCallHost)
@@ -1536,8 +1559,52 @@ static NSMutableSet* hostList;
 #endif
 }
 
+/// An upright iPhone lists the hosts as a column; otherwise they stand in a row.
+- (BOOL)hostsInColumn {
+#if TARGET_OS_TV
+    return NO;
+#else
+    return UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPhone &&
+           self.view.bounds.size.height > self.view.bounds.size.width;
+#endif
+}
+
+- (void)updateHostsInColumn {
+    [[hostScrollView subviews] makeObjectsPerformSelector:@selector(removeFromSuperview)];
+    UIComputerView* addComp = [[UIComputerView alloc] initForAddWithCallback:self];
+    NSMutableArray<UIComputerView*>* views = [NSMutableArray array];
+    @synchronized (hostList) {
+        NSArray* sortedHostList = [[hostList allObjects] sortedArrayUsingSelector:@selector(compareName:)];
+        for (TemporaryHost* comp in sortedHostList) {
+            [views addObject:[[UIComputerView alloc] initWithComputer:comp andCallback:self]];
+            for (TemporaryApp* app in comp.appList) {
+                dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
+                    [self updateBoxArtCacheForApp:app];
+                });
+            }
+        }
+    }
+    [views addObject:addComp];
+    [self updateHostShortcuts];
+    [self updateTitle];
+
+    CGFloat x = hostScrollView.frame.size.width / 2;
+    CGFloat gap = addComp.frame.size.height * 0.35;
+    CGFloat y = gap;
+    for (UIComputerView* v in views) {
+        v.center = CGPointMake(x, y + v.frame.size.height / 2);
+        y += v.frame.size.height + gap;
+        [hostScrollView addSubview:v];
+    }
+    [hostScrollView setContentSize:CGSizeMake(hostScrollView.frame.size.width, y)];
+}
+
 - (void)updateHosts {
     Log(LOG_I, @"Updating hosts...");
+    if ([self hostsInColumn]) {
+        [self updateHostsInColumn];
+        return;
+    }
     [[hostScrollView subviews] makeObjectsPerformSelector:@selector(removeFromSuperview)];
     UIComputerView* addComp = [[UIComputerView alloc] initForAddWithCallback:self];
     UIComputerView* compView;

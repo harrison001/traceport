@@ -6,6 +6,7 @@
 //  Copyright (c) 2014 Moonlight Stream. All rights reserved.
 //
 
+#import "SWRevealViewController.h"
 #import "SettingsViewController.h"
 #import "TemporarySettings.h"
 #import "DataManager.h"
@@ -67,9 +68,45 @@ CGSize resolutionTable[RESOLUTION_TABLE_SIZE];
     return i - 1;
 }
 
+/// The controls are laid out for a 510 pt wide pane. When the pane is narrower (an upright
+/// iPhone), stretch every row to the width there is and shrink the segment titles, so nothing is
+/// cut off at the right edge.
+- (void)fitControlsToWidth {
+    // the pane's view spans the whole screen; only the reveal width of it is uncovered
+    CGFloat width = self.view.bounds.size.width;
+    SWRevealViewController* reveal = self.revealViewController;
+    if (reveal != nil && reveal.rearViewRevealWidth > 0) {
+        width = MIN(width, reveal.rearViewRevealWidth);
+    }
+    CGFloat left = self.resolutionSelector.frame.origin.x;
+    CGFloat avail = width - left - 16;
+    if (avail < 200) {
+        return;
+    }
+    BOOL narrow = avail < 470;
+    for (UIView* view in self.scrollView.subviews) {
+        BOOL control = [view isKindOfClass:[UISegmentedControl class]] || [view isKindOfClass:[UISlider class]] ||
+                       view == self.resolutionDisplayView;
+        if (!control && ![view isKindOfClass:[UILabel class]]) {
+            continue;
+        }
+        if (fabs(view.frame.size.width - avail) > 0.5 && (control || view.frame.size.width > avail)) {
+            view.frame = CGRectMake(view.frame.origin.x, view.frame.origin.y, avail, view.frame.size.height);
+        }
+        if ([view isKindOfClass:[UISegmentedControl class]]) {
+            UISegmentedControl* seg = (UISegmentedControl*)view;
+            UIFont* font = [UIFont systemFontOfSize:(narrow && seg.numberOfSegments > 4) ? 12.0 : (narrow ? 14.0 : 15.0)];
+            [seg setTitleTextAttributes:@{NSFontAttributeName: font} forState:UIControlStateNormal];
+            seg.apportionsSegmentWidthsByContent = narrow && seg.numberOfSegments > 4;
+        }
+    }
+    [self updateResolutionDisplayViewText];
+}
+
 // This view is rooted at a ScrollView. To make it scrollable,
 // we'll update content size here.
 -(void)viewDidLayoutSubviews {
+    [self fitControlsToWidth];
     CGFloat highestViewY = 0;
     
     // Enumerate the scroll view's subviews looking for the
