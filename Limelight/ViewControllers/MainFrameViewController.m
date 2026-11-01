@@ -142,7 +142,9 @@ static void RequestInterfaceOrientation(UIViewController* vc, BOOL portrait) {
 #if TARGET_OS_TV
     UITapGestureRecognizer* _menuRecognizer;
 #else
-    BOOL _allowPortraitForStream;   // host list turns upright just long enough to push a tall stream
+    BOOL _allowLandscapeForStream;  // iPhone: host list turns wide just long enough to push a wide stream
+    BOOL _launchOnLoad;             // a tapped host goes straight into its app (one app, or a phone)
+    BOOL _launchedDirectly;         // …and coming back from that stream shows the host list, not its apps
     BOOL _streamSeguePending;       // push once that rotation lands
 #endif
 }
@@ -250,6 +252,7 @@ static NSMutableSet* hostList;
             
             [self updateAppsForHost:host];
             [self hideLoadingFrame: nil];
+            [self launchIfObvious:host];
         });
     }
     Log(LOG_I, @"Using cached app list: %d", usingCachedAppList);
@@ -293,6 +296,7 @@ static NSMutableSet* hostList;
                 [self->_appManager stopRetrieving];
                 [self->_appManager retrieveAssetsFromHost:host];
                 [self hideLoadingFrame: nil];
+                [self launchIfObvious:host];
             });
         }
     });
@@ -414,7 +418,26 @@ static NSMutableSet* hostList;
     [[self activeViewController] presentViewController:alert animated:YES completion:nil];
 }
 
+/// One tap on a host goes straight into it when there is nothing to choose: a single app, or a
+/// phone gateway (whose one job is the phone's screen). The app already running there wins.
+- (void)launchIfObvious:(TemporaryHost *)host {
+    if (!_launchOnLoad || host != _selectedHost || _sortedAppList.count == 0) {
+        return;
+    }
+    BOOL phone = [HostProfile targetTypeForHost:host.uuid] == TPTargetPhone;
+    if (_sortedAppList.count > 1 && !phone) {
+        return; // a real choice: show the apps
+    }
+    _launchOnLoad = NO;
+    TemporaryApp *app = [self findRunningApp:host] ?: _sortedAppList.firstObject;
+    Log(LOG_I, @"Straight into %@ on %@ (one tap)", app.name, host.name);
+    _launchedDirectly = YES;
+    [self prepareToStreamApp:app];
+    [self beginStreamSegue];
+}
+
 - (void) hostClicked:(TemporaryHost *)host view:(UIView *)view {
+    _launchOnLoad = (view != nil); // tapped by the user (not reopened after a stream)
     // Treat clicks on offline hosts to be long clicks
     // This shows the context menu with wake, delete, etc. rather
     // than just hanging for a while and failing as we would in this
@@ -1374,10 +1397,17 @@ static NSMutableSet* hostList;
 #if !TARGET_OS_TV
     [[self revealViewController] setPrimaryViewController:self];
 
-    // Back from a tall stream: give portrait up and turn the list wide again.
-    if (_allowPortraitForStream || self.view.bounds.size.height > self.view.bounds.size.width) {
-        _allowPortraitForStream = NO;
-        RequestInterfaceOrientation(self, NO);
+    // Back from a wide stream: give landscape up and stand the list upright again (iPhone).
+    if (_allowLandscapeForStream ||
+        (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPhone &&
+         self.view.bounds.size.width > self.view.bounds.size.height)) {
+        _allowLandscapeForStream = NO;
+        RequestInterfaceOrientation(self, YES);
+    }
+    // Back from a stream the host was tapped straight into: the host list, not a one-app grid
+    if (_launchedDirectly) {
+        _launchedDirectly = NO;
+        [self showHostSelectionView];
     }
 #endif
 
@@ -1697,9 +1727,13 @@ static NSMutableSet* hostList;
 }
 
 - (UIInterfaceOrientationMask)supportedInterfaceOrientations {
-    // The host list stays wide, as it always has. It only turns upright for
-    // the moment it takes to hand a tall stream to the stream view.
-    return _allowPortraitForStream ? UIInterfaceOrientationMaskPortrait : UIInterfaceOrientationMaskLandscape;
+    // iPhone: the host list and settings stand upright (most hosts here are phones, streamed
+    // upright); it turns wide only for the moment it takes to hand a wide stream over.
+    // iPad: either way, as the device is held.
+    if (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad) {
+        return UIInterfaceOrientationMaskAllButUpsideDown;
+    }
+    return _allowLandscapeForStream ? UIInterfaceOrientationMaskLandscape : UIInterfaceOrientationMaskPortrait;
 }
 
 - (void)viewWillTransitionToSize:(CGSize)size withTransitionCoordinator:(id<UIViewControllerTransitionCoordinator>)coordinator {
@@ -1727,7 +1761,7 @@ static NSMutableSet* hostList;
     BOOL wantPortrait = _streamConfig.height > _streamConfig.width;
     BOOL isPortrait = self.view.bounds.size.height > self.view.bounds.size.width;
     if (wantPortrait != isPortrait) {
-        _allowPortraitForStream = wantPortrait;
+        _allowLandscapeForStream = !wantPortrait;
         _streamSeguePending = YES;
         RequestInterfaceOrientation(self, wantPortrait);
         // If the system never rotates (the request refused, say), stream
