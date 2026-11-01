@@ -265,9 +265,18 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
 #if !TARGET_OS_TV
     if (@available(iOS 15.0, *)) {
         AVPictureInPictureController *pip = _pictureInPicture;
-        if (pip.isPictureInPictureActive) {
-            [pip stopPictureInPicture];
-        }
+        _pictureInPicture = nil;
+        // The stream is over: leaving the app must not shrink its last picture into Picture in
+        // Picture (11-01: it started 9 s after a swipe had ended the stream). Called from the
+        // connection's thread; the controller belongs to the main one.
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (pip.isPictureInPictureActive) {
+                [pip stopPictureInPicture];
+            }
+            pip.canStartPictureInPictureAutomaticallyFromInline = NO;
+            pip.delegate = nil;
+            pip.contentSource = nil;
+        });
     }
 #endif
     if (sCurrentRenderer == self) {
