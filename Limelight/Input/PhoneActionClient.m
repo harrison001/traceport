@@ -262,6 +262,7 @@ didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge
     /// calls that just ended here (declined, hung up, handed to the stream) → when. The stream's
     /// polling can still see such a call on the gateway for a moment; it must not ring again.
     NSMutableDictionary<NSUUID *, NSDate *> *_ended;
+    NSMutableSet<NSString *> *_silenced;                 // calls a Focus kept from ringing (a notice is up)
 }
 
 + (instancetype)shared {
@@ -277,6 +278,7 @@ didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge
     }
     _calls = [NSMutableDictionary dictionary];
     _ended = [NSMutableDictionary dictionary];
+    _silenced = [NSMutableSet set];
     CXProviderConfiguration *config = [[CXProviderConfiguration alloc] init];
     config.supportsVideo = NO;
     config.maximumCallGroups = 1;
@@ -352,7 +354,7 @@ didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge
                 // Focus settings whether it may break through.
                 if ([error.domain isEqualToString:CXErrorDomainIncomingCall] &&
                     error.code == CXErrorCodeIncomingCallErrorFilteredByDoNotDisturb) {
-                    [self postSilencedNotice:call gateway:base];
+                    [self postSilencedNotice:call gateway:base missed:NO];
                 }
             }
             completion();
@@ -360,9 +362,21 @@ didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge
         return;
     }
 
+    BOOL silenced = NO;
     if ([type isEqualToString:@"end"] && uuid != nil) {
-        // a notice left for a call that a Focus silenced goes once the call is over
-        [[UNUserNotificationCenter currentNotificationCenter] removeDeliveredNotificationsWithIdentifiers:@[uuid.UUIDString]];
+        @synchronized (_silenced) {
+            silenced = [_silenced containsObject:uuid.UUIDString];
+            [_silenced removeObject:uuid.UUIDString];
+        }
+    }
+    if (silenced) {
+        // the notice for a call a Focus silenced: unanswered, it turns into a missed call (11-01: deleting
+        // it 30 s later left nothing to see); answered or hung up elsewhere, it goes
+        if ([call[@"why"] isEqual:@"missed"]) {
+            [self postSilencedNotice:call gateway:base missed:YES];
+        } else {
+            [[UNUserNotificationCenter currentNotificationCenter] removeDeliveredNotificationsWithIdentifiers:@[uuid.UUIDString]];
+        }
     }
 
     if ([type isEqualToString:@"end"] && known != nil) {
@@ -405,7 +419,7 @@ didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge
 
 /// The notice shown instead of the ring when a Focus silenced the call. Tapping it opens the
 /// phone's stream, where the call is still ringing (and rings here too once TracePort is in front).
-- (void)postSilencedNotice:(NSDictionary *)call gateway:(nullable NSString *)base {
+- (void)postSilencedNotice:(NSDictionary *)call gateway:(nullable NSString *)base missed:(BOOL)missed {
     NSString *name = [call[@"name"] isKindOfClass:[NSString class]] ? call[@"name"] : @"";
     NSString *number = [call[@"number"] isKindOfClass:[NSString class]] ? call[@"number"] : @"";
     NSString *who = name.length > 0 ? name : (number.length > 0 ? number : @"Someone");
@@ -421,9 +435,14 @@ didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge
 
     UNMutableNotificationContent *content = [[UNMutableNotificationContent alloc] init];
     BOOL video = [call[@"kind"] isEqual:@"video"];
-    content.title = wechat ? (video ? @"WeChat video call · home phone" : @"WeChat call · home phone") : @"Incoming call · home phone";
-    content.body = [NSString stringWithFormat:@"%@ is calling. Focus silenced the ring — tap to open the phone and answer.", who];
-    content.sound = [UNNotificationSound defaultSound];
+    if (missed) {
+        content.title = wechat ? (video ? @"Missed WeChat video call · home phone" : @"Missed WeChat call · home phone") : @"Missed call · home phone";
+        content.body = [NSString stringWithFormat:@"%@ called while a Focus was on.", who];
+    } else {
+        content.title = wechat ? (video ? @"WeChat video call · home phone" : @"WeChat call · home phone") : @"Incoming call · home phone";
+        content.body = [NSString stringWithFormat:@"%@ is calling. Focus silenced the ring — tap to open the phone and answer.", who];
+        content.sound = [UNNotificationSound defaultSound];
+    }
     content.threadIdentifier = @"traceport-calls";
     if (host != nil) {
         content.userInfo = @{@"openHost": host};
@@ -432,9 +451,14 @@ didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge
         content.interruptionLevel = UNNotificationInterruptionLevelTimeSensitive;
     }
     NSString *ident = [call[@"id"] isKindOfClass:[NSString class]] ? call[@"id"] : [NSUUID UUID].UUIDString;
+    if (!missed) {
+        @synchronized (_silenced) {
+            [_silenced addObject:ident];
+        }
+    }
     UNNotificationRequest *request = [UNNotificationRequest requestWithIdentifier:ident content:content trigger:nil];
     [[UNUserNotificationCenter currentNotificationCenter] addNotificationRequest:request withCompletionHandler:^(NSError *error) {
-        Log(error ? LOG_W : LOG_I, @"Calls: Focus silenced the ring; notice %@", error ? error.localizedDescription : @"posted");
+        Log(error ? LOG_W : LOG_I, @"Calls: Focus silenced the ring; %@ notice %@", missed ? @"missed-call" : @"incoming", error ? error.localizedDescription : @"posted");
     }];
 }
 
