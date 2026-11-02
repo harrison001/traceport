@@ -45,6 +45,7 @@ static OPUS_MULTISTREAM_CONFIGURATION audioConfig;
 static void* audioBuffer;
 static int audioDropped, audioPlayed;
 static double audioStatsLogged;
+static int audioMaxPendingMs, audioMaxQueuedMs; // worst seen in the current 10 s window
 static int audioFrameSize;
 
 /// Whether to drop the stream's sound on the floor.
@@ -317,18 +318,30 @@ void ArDecodeAndPlaySample(char* sampleData, int sampleLength)
     // 30 ms, which drops packets on ordinary network jitter (they arrive in bursts) and every dropped
     // packet is a 5-10 ms hole: the crackle heard on both Linux and macOS hosts. 100 ms absorbs the
     // jitter and still caps how far audio can fall behind.
-    if (LiGetPendingAudioDuration() > 100) {
+    int pendingMs = LiGetPendingAudioDuration();
+    int bytesPerSecond = audioConfig.sampleRate * audioConfig.channelCount * (int)sizeof(short);
+    int queuedMs = bytesPerSecond > 0 ? (int)((long long)SDL_GetQueuedAudioSize(audioDevice) * 1000 / bytesPerSecond) : 0;
+    if (pendingMs > audioMaxPendingMs) audioMaxPendingMs = pendingMs;
+    if (queuedMs > audioMaxQueuedMs) audioMaxQueuedMs = queuedMs;
+    if (CACurrentMediaTime() - audioStatsLogged >= 10) {
+        if (audioDropped > 0) {
+            // Raw numbers to find out why it drops (11-02: 30-40% in the background, almost none in
+            // front): how much iOS takes per audio callback, and the worst backlog on each side
+            AVAudioSession *session = [AVAudioSession sharedInstance];
+            Log(LOG_I, @"Audio: dropped %d of %d packets in the last 10s (queue over 100 ms); "
+                "iOS buffer %.1f ms at %.0f Hz, max pending %d ms, max SDL queue %d ms",
+                audioDropped, audioDropped + audioPlayed,
+                session.IOBufferDuration * 1000, session.sampleRate, audioMaxPendingMs, audioMaxQueuedMs);
+        }
+        audioDropped = audioPlayed = 0;
+        audioMaxPendingMs = audioMaxQueuedMs = 0;
+        audioStatsLogged = CACurrentMediaTime();
+    }
+    if (pendingMs > 100) {
         audioDropped++;
         return;
     }
     audioPlayed++;
-    if (CACurrentMediaTime() - audioStatsLogged >= 10) {
-        if (audioDropped > 0) {
-            Log(LOG_I, @"Audio: dropped %d of %d packets in the last 10s (queue over 100 ms)", audioDropped, audioDropped + audioPlayed);
-        }
-        audioDropped = audioPlayed = 0;
-        audioStatsLogged = CACurrentMediaTime();
-    }
     
     decodeLen = opus_multistream_decode(opusDecoder, (unsigned char *)sampleData, sampleLength,
                                         (short*)audioBuffer, audioConfig.samplesPerFrame, 0);

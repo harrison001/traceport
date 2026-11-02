@@ -947,7 +947,8 @@ enum { kMicFrameBytes = 640 };              // 20 ms of 16 kHz mono s16
         // Locking the screen lands here too, with no Picture in Picture: check every minute and
         // end the stream unless it is on screen or a call is going on (11-01: a locked phone
         // kept streaming for 6 hours, asking for a keyframe every few seconds).
-        Log(LOG_I, @"Backgrounded with Picture in Picture possible; keeping the stream while it is in use");
+        Log(LOG_I, @"Backgrounded with Picture in Picture possible; keeping the stream while it is in use (iOS audio buffer %.1f ms)",
+            [AVAudioSession sharedInstance].IOBufferDuration * 1000);
         if (_inactivityTimer != nil) {
             [_inactivityTimer invalidate];
         }
