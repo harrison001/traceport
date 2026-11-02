@@ -1033,7 +1033,7 @@
 					"$(PROJECT_DIR)/libs/**",
 				);
 				INFOPLIST_FILE = "Moonlight TV/Info.plist";
-				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.games";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -1089,7 +1089,7 @@
 					"$(PROJECT_DIR)/libs/**",
 				);
 				INFOPLIST_FILE = "Moonlight TV/Info.plist";
-				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.games";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -1252,7 +1252,7 @@
 					"$(PROJECT_DIR)/libs/**",
 				);
 				INFOPLIST_FILE = "Limelight/Limelight-Info.plist";
-				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.games";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -1303,7 +1303,7 @@
 					"$(PROJECT_DIR)/libs/**",
 				);
 				INFOPLIST_FILE = "Limelight/Limelight-Info.plist";
-				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.games";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
