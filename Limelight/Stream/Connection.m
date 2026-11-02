@@ -11,6 +11,7 @@
 
 #import <VideoToolbox/VideoToolbox.h>
 #import <QuartzCore/QuartzCore.h>
+#import <AVFoundation/AVFoundation.h>
 
 #define SDL_MAIN_HANDLED
 #import <SDL.h>
@@ -40,13 +41,32 @@ static video_stats_t currentVideoStats;
 static video_stats_t lastVideoStats;
 static NSLock* videoStatsLock;
 
-static SDL_AudioDeviceID audioDevice;
 static OPUS_MULTISTREAM_CONFIGURATION audioConfig;
-static void* audioBuffer;
+static short *audioBuffer;                  // one decoded Opus frame, interleaved
+
+// Playback (11-02): AVAudioEngine instead of SDL. SDL's output thread pulled irregularly once the
+// app was in the background and almost stopped with the phone locked, so the sound went away.
+// iOS calls a source node's render block on its real-time audio thread, in the background too.
+// The decoder never waits: it drops a frame into the ring below and goes back for the next one.
+static AVAudioEngine *audioEngine;
+static AVAudioSourceNode *audioSource;
+static id audioEngineObserver, audioInterruptionObserver;
+
+// Ring of interleaved 16-bit sample frames. One writer (the decode thread) and one reader (the
+// render thread), so two ever-increasing frame counters are all the locking it needs.
+#define RING_SECONDS 1
+static short *ring;
+static uint32_t ringFrames;
+static int ringChannels;
+static _Atomic uint64_t ringWrite, ringRead;
+static atomic_bool ringFlush;               // mute: the render thread throws away what is queued
+static atomic_bool ringPrimed;              // play only once enough is buffered (start, after a gap)
+static atomic_int ringPrefill, ringCap;     // frames: start playing at / never queue more than
+
+// 10 s statistics
 static int audioDropped, audioPlayed;
-static double audioStatsLogged;
-static int audioMaxPendingMs, audioMaxQueuedMs; // worst seen in the current 10 s window
-static long long audioPushedBytes, audioWindowStartQueued; // to work out how much SDL actually played
+static double audioStatsLogged, audioLimitsSet;
+static atomic_int audioUnderruns, audioMinBuffered, audioMaxBuffered, audioCallbacks;
 
 static NSString *AudioRouteText(void) {
     NSMutableArray *outs = [NSMutableArray array];
@@ -81,7 +101,6 @@ static void WatchAudioSession(void) {
         }];
     });
 }
-static int audioFrameSize;
 
 /// Whether to drop the stream's sound on the floor.
 ///
@@ -236,45 +255,105 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit)
                              decodeUnit:decodeUnit];
 }
 
+/// How far ahead to buffer, from how much iOS takes per render call (21 ms in the background,
+/// more on some routes): enough that one call never finds the ring empty, little enough to keep
+/// the delay low.
+static void SetAudioLimits(void) {
+    double io = [AVAudioSession sharedInstance].IOBufferDuration;
+    double rate = audioConfig.sampleRate;
+    int prefill = (int)(MAX(0.030, io * 1.5) * rate);
+    int cap = (int)(MAX(0.150, io * 3 + 0.030) * rate);
+    if (cap > (int)ringFrames - 1) cap = (int)ringFrames - 1;
+    atomic_store(&ringPrefill, prefill);
+    atomic_store(&ringCap, cap);
+}
+
+static OSStatus RenderAudio(BOOL *isSilence, AVAudioFrameCount frameCount, AudioBufferList *out) {
+    uint64_t r = atomic_load_explicit(&ringRead, memory_order_relaxed);
+    uint64_t w = atomic_load_explicit(&ringWrite, memory_order_acquire);
+    if (atomic_exchange(&ringFlush, false)) {
+        r = w;
+        atomic_store(&ringPrimed, false);
+    }
+    uint64_t avail = w - r;
+    atomic_fetch_add(&audioCallbacks, 1);
+    if ((int)avail < atomic_load(&audioMinBuffered)) atomic_store(&audioMinBuffered, (int)avail);
+    if ((int)avail > atomic_load(&audioMaxBuffered)) atomic_store(&audioMaxBuffered, (int)avail);
+
+    bool primed = atomic_load(&ringPrimed);
+    if (!primed && (int)avail >= atomic_load(&ringPrefill)) {
+        primed = true;
+        atomic_store(&ringPrimed, true);
+    }
+    uint32_t n = primed ? (uint32_t)MIN(avail, (uint64_t)frameCount) : 0;
+    if (primed && n < frameCount) {
+        // ran dry: fill the rest with silence and build the cushion up again before going on
+        atomic_fetch_add(&audioUnderruns, 1);
+        atomic_store(&ringPrimed, false);
+    }
+
+    int ch = ringChannels;
+    if (out->mNumberBuffers == (UInt32)ch) {
+        for (int c = 0; c < ch; c++) {
+            float *dst = (float *)out->mBuffers[c].mData;
+            for (uint32_t i = 0; i < n; i++) {
+                dst[i] = ring[((r + i) % ringFrames) * ch + c] * (1.0f / 32768.0f);
+            }
+            memset(dst + n, 0, (frameCount - n) * sizeof(float));
+        }
+    } else if (out->mNumberBuffers == 1) {
+        float *dst = (float *)out->mBuffers[0].mData;   // interleaved
+        for (uint32_t i = 0; i < n; i++) {
+            for (int c = 0; c < ch; c++) {
+                dst[i * ch + c] = ring[((r + i) % ringFrames) * ch + c] * (1.0f / 32768.0f);
+            }
+        }
+        memset(dst + n * ch, 0, (frameCount - n) * ch * sizeof(float));
+    }
+    atomic_store_explicit(&ringRead, r + n, memory_order_release);
+    *isSilence = (n == 0);
+    return noErr;
+}
+
+static void StartAudioEngine(const char *why) {
+    if (audioEngine == nil || audioEngine.isRunning) return;
+    NSError *err = nil;
+    if ([audioEngine startAndReturnError:&err]) {
+        Log(LOG_I, @"Audio: output started (%s), route %@", why, AudioRouteText());
+    } else {
+        Log(LOG_W, @"Audio: output could not start (%s): %@", why, err.localizedDescription);
+    }
+}
+
 int ArInit(int audioConfiguration, POPUS_MULTISTREAM_CONFIGURATION opusConfig, void* context, int flags)
 {
     int err;
-    SDL_AudioSpec want, have;
 
     // Carry the choice across sessions. Someone who muted because they are in an office is still
     // in that office the next time they connect, and having to find the control again every time
     // is how a setting earns its reputation for not working.
     atomic_store(&audioMuted, [[NSUserDefaults standardUserDefaults] boolForKey:@"audioMuted"]);
-    
-    if (SDL_InitSubSystem(SDL_INIT_AUDIO) < 0) {
-        Log(LOG_E, @"Failed to initialize audio subsystem: %s\n", SDL_GetError());
-        return -1;
-    }
-        
-    SDL_zero(want);
-    want.freq = opusConfig->sampleRate;
-    want.format = AUDIO_S16;
-    want.channels = opusConfig->channelCount;
-    // A device buffer of a single Opus frame (5-10 ms) underruns whenever iOS pulls a little late,
-    // and every underrun is an audible click. Four frames still keeps playback latency low.
-    want.samples = opusConfig->samplesPerFrame * 4;
 
-    audioDevice = SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
-    if (audioDevice == 0) {
-        Log(LOG_E, @"Failed to open audio device: %s\n", SDL_GetError());
-        ArCleanup();
-        return -1;
-    }
-    
     audioConfig = *opusConfig;
-    audioFrameSize = opusConfig->samplesPerFrame * sizeof(short) * opusConfig->channelCount;
-    audioBuffer = SDL_malloc(audioFrameSize);
-    if (audioBuffer == NULL) {
-        Log(LOG_E, @"Failed to allocate audio frame buffer");
+    audioBuffer = malloc(opusConfig->samplesPerFrame * sizeof(short) * opusConfig->channelCount);
+    ringChannels = opusConfig->channelCount;
+    ringFrames = opusConfig->sampleRate * RING_SECONDS;
+    ring = calloc((size_t)ringFrames * ringChannels, sizeof(short));
+    if (audioBuffer == NULL || ring == NULL) {
+        Log(LOG_E, @"Failed to allocate audio buffers");
         ArCleanup();
         return -1;
     }
-    
+    atomic_store(&ringWrite, 0);
+    atomic_store(&ringRead, 0);
+    atomic_store(&ringFlush, false);
+    atomic_store(&ringPrimed, false);
+    atomic_store(&audioMinBuffered, INT_MAX);
+    atomic_store(&audioMaxBuffered, 0);
+    atomic_store(&audioUnderruns, 0);
+    audioDropped = audioPlayed = 0;
+    audioStatsLogged = CACurrentMediaTime();
+
     opusDecoder = opus_multistream_decoder_create(opusConfig->sampleRate,
                                                   opusConfig->channelCount,
                                                   opusConfig->streams,
@@ -286,17 +365,62 @@ int ArInit(int audioConfiguration, POPUS_MULTISTREAM_CONFIGURATION opusConfig, v
         ArCleanup();
         return -1;
     }
-    
-    WatchAudioSession();
-    audioPushedBytes = 0;
-    audioWindowStartQueued = 0;
 
-    // Start playback
-    SDL_PauseAudioDevice(audioDevice, 0);
-    
-    // Disable lowering volume of other audio streams (SDL sets AVAudioSessionCategoryOptionDuckOthers by default)
-    [[AVAudioSession sharedInstance] setCategory:AVAudioSessionCategoryPlayback withOptions:AVAudioSessionCategoryOptionMixWithOthers error:nil];
-    
+    WatchAudioSession();
+    // Mixed with other apps' sound rather than ducking it, as before
+    AVAudioSession *session = [AVAudioSession sharedInstance];
+    [session setCategory:AVAudioSessionCategoryPlayback withOptions:AVAudioSessionCategoryOptionMixWithOthers error:nil];
+    [session setActive:YES error:nil];
+    SetAudioLimits();
+    audioLimitsSet = CACurrentMediaTime();
+
+    AVAudioFormat *format;
+    if (ringChannels <= 2) {
+        format = [[AVAudioFormat alloc] initStandardFormatWithSampleRate:opusConfig->sampleRate channels:ringChannels];
+    } else {
+        // the stream's surround order is the MPEG one: L R C LFE, then the rears (and sides)
+        AudioChannelLayoutTag tag = ringChannels >= 8 ? kAudioChannelLayoutTag_MPEG_7_1_C
+                                  : ringChannels >= 6 ? kAudioChannelLayoutTag_MPEG_5_1_A
+                                  : (kAudioChannelLayoutTag_DiscreteInOrder | (UInt32)ringChannels);
+        format = [[AVAudioFormat alloc] initStandardFormatWithSampleRate:opusConfig->sampleRate
+                                                           channelLayout:[AVAudioChannelLayout layoutWithLayoutTag:tag]];
+    }
+    if (format == nil) {
+        Log(LOG_E, @"Audio: no output format for %d channels at %d Hz", ringChannels, opusConfig->sampleRate);
+        ArCleanup();
+        return -1;
+    }
+    audioEngine = [[AVAudioEngine alloc] init];
+    audioSource = [[AVAudioSourceNode alloc] initWithFormat:format renderBlock:
+                   ^OSStatus(BOOL *isSilence, const AudioTimeStamp *timestamp, AVAudioFrameCount frameCount, AudioBufferList *outputData) {
+        return RenderAudio(isSilence, frameCount, outputData);
+    }];
+    [audioEngine attachNode:audioSource];
+    [audioEngine connect:audioSource to:audioEngine.mainMixerNode format:format];
+
+    // The engine stops when the audio session changes under it (the mic turning on or off switches
+    // the category, a route change, an interruption): start it again each time.
+    AVAudioEngine *engine = audioEngine;
+    audioEngineObserver = [[NSNotificationCenter defaultCenter] addObserverForName:AVAudioEngineConfigurationChangeNotification
+                                                                            object:engine queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *n) {
+        if (engine == audioEngine) StartAudioEngine("configuration changed");
+    }];
+    audioInterruptionObserver = [[NSNotificationCenter defaultCenter] addObserverForName:AVAudioSessionInterruptionNotification
+                                                                                  object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *n) {
+        if ([n.userInfo[AVAudioSessionInterruptionTypeKey] unsignedIntegerValue] == AVAudioSessionInterruptionTypeEnded && engine == audioEngine) {
+            [[AVAudioSession sharedInstance] setActive:YES error:nil];
+            StartAudioEngine("interruption ended");
+        }
+    }];
+
+    StartAudioEngine("stream start");
+    if (!audioEngine.isRunning) {
+        ArCleanup();
+        return -1;
+    }
+    Log(LOG_I, @"Audio: %d channel(s) at %d Hz, start after %d ms, at most %d ms queued",
+        ringChannels, opusConfig->sampleRate,
+        atomic_load(&ringPrefill) * 1000 / opusConfig->sampleRate, atomic_load(&ringCap) * 1000 / opusConfig->sampleRate);
     return 0;
 }
 
@@ -313,8 +437,8 @@ int ArInit(int audioConfiguration, POPUS_MULTISTREAM_CONFIGURATION opusConfig, v
     // Throw away what is already queued. Without this, unmuting starts by playing whatever was
     // buffered at the moment of the mute — a stale burst from seconds ago, arriving as a jolt
     // exactly when the user asked for sound back.
-    if (muted && audioDevice != 0) {
-        SDL_ClearQueuedAudio(audioDevice);
+    if (muted) {
+        atomic_store(&ringFlush, true);
     }
 
     [[NSNotificationCenter defaultCenter] postNotificationName:kAudioMuteChangedNotification
@@ -323,28 +447,36 @@ int ArInit(int audioConfiguration, POPUS_MULTISTREAM_CONFIGURATION opusConfig, v
 
 void ArCleanup(void)
 {
+    if (audioEngineObserver != nil) {
+        [[NSNotificationCenter defaultCenter] removeObserver:audioEngineObserver];
+        audioEngineObserver = nil;
+    }
+    if (audioInterruptionObserver != nil) {
+        [[NSNotificationCenter defaultCenter] removeObserver:audioInterruptionObserver];
+        audioInterruptionObserver = nil;
+    }
+    if (audioEngine != nil) {
+        [audioEngine stop];   // after this the render block is no longer called
+        if (audioSource != nil) {
+            [audioEngine detachNode:audioSource];
+        }
+        audioEngine = nil;
+        audioSource = nil;
+    }
+
     if (opusDecoder != NULL) {
         opus_multistream_decoder_destroy(opusDecoder);
         opusDecoder = NULL;
     }
-    
-    if (audioDevice != 0) {
-        SDL_CloseAudioDevice(audioDevice);
-        audioDevice = 0;
-    }
-    
-    if (audioBuffer != NULL) {
-        SDL_free(audioBuffer);
-        audioBuffer = NULL;
-    }
-    
-    SDL_QuitSubSystem(SDL_INIT_AUDIO);
+
+    free(audioBuffer);
+    audioBuffer = NULL;
+    free(ring);
+    ring = NULL;
 }
 
 void ArDecodeAndPlaySample(char* sampleData, int sampleLength)
 {
-    int decodeLen;
-
     // Muted: drop it here, before the decode. The host keeps sending — there is no way to ask it
     // to stop that does not risk the session (Sunshine's audio thread waits on one ping at setup
     // and takes the whole session down if it never comes) — but nothing past this point costs
@@ -352,62 +484,54 @@ void ArDecodeAndPlaySample(char* sampleData, int sampleLength)
     if (atomic_load(&audioMuted)) {
         return;
     }
-
-    // Don't queue if too much audio is already waiting in Moonlight's audio queue. Upstream used
-    // 30 ms, which drops packets on ordinary network jitter (they arrive in bursts) and every dropped
-    // packet is a 5-10 ms hole: the crackle heard on both Linux and macOS hosts. 100 ms absorbs the
-    // jitter and still caps how far audio can fall behind.
-    int pendingMs = LiGetPendingAudioDuration();
-    int bytesPerSecond = audioConfig.sampleRate * audioConfig.channelCount * (int)sizeof(short);
-    int queuedMs = bytesPerSecond > 0 ? (int)((long long)SDL_GetQueuedAudioSize(audioDevice) * 1000 / bytesPerSecond) : 0;
-    if (pendingMs > audioMaxPendingMs) audioMaxPendingMs = pendingMs;
-    if (queuedMs > audioMaxQueuedMs) audioMaxQueuedMs = queuedMs;
-    if (CACurrentMediaTime() - audioStatsLogged >= 10) {
-        if (audioDropped > 0) {
-            // Raw numbers to find out why it drops (11-02: 30-40% in the background, almost none in
-            // front): how much iOS takes per audio callback, and the worst backlog on each side
-            AVAudioSession *session = [AVAudioSession sharedInstance];
-            long long queuedNow = SDL_GetQueuedAudioSize(audioDevice);
-            long long playedBytes = audioPushedBytes - (queuedNow - audioWindowStartQueued);
-            SDL_AudioStatus status = SDL_GetAudioDeviceStatus(audioDevice);
-            Log(LOG_I, @"Audio: dropped %d of %d packets in the last 10s (queue over 100 ms); "
-                "iOS buffer %.1f ms at %.0f Hz, max pending %d ms, max SDL queue %d ms; "
-                "SDL played %lld ms in %.1f s (%s), route %@, other audio %d, category %@",
-                audioDropped, audioDropped + audioPlayed,
-                session.IOBufferDuration * 1000, session.sampleRate, audioMaxPendingMs, audioMaxQueuedMs,
-                bytesPerSecond > 0 ? playedBytes * 1000 / bytesPerSecond : 0, CACurrentMediaTime() - audioStatsLogged,
-                status == SDL_AUDIO_PLAYING ? "playing" : status == SDL_AUDIO_PAUSED ? "paused" : "stopped",
-                AudioRouteText(), session.isOtherAudioPlaying, session.category);
-        }
-        audioPushedBytes = 0;
-        audioWindowStartQueued = SDL_GetQueuedAudioSize(audioDevice);
-        audioDropped = audioPlayed = 0;
-        audioMaxPendingMs = audioMaxQueuedMs = 0;
-        audioStatsLogged = CACurrentMediaTime();
+    if (opusDecoder == NULL || ring == NULL) {
+        return;
     }
-    if (pendingMs > 100) {
+
+    double now = CACurrentMediaTime();
+    if (now - audioLimitsSet >= 1) {
+        SetAudioLimits();   // iOS may change its buffer when the app goes to the background
+        audioLimitsSet = now;
+    }
+    if (now - audioStatsLogged >= 10) {
+        int underruns = atomic_exchange(&audioUnderruns, 0);
+        int minBuf = atomic_exchange(&audioMinBuffered, INT_MAX);
+        int maxBuf = atomic_exchange(&audioMaxBuffered, 0);
+        int calls = atomic_exchange(&audioCallbacks, 0);
+        if (audioDropped > 0 || underruns > 0) {
+            double rate = audioConfig.sampleRate;
+            Log(LOG_I, @"Audio: %d packets played, %d dropped (over %d ms queued), %d run-dry in %d output calls; "
+                "queued %d-%d ms; iOS buffer %.1f ms; engine %s, route %@",
+                audioPlayed, audioDropped, (int)(atomic_load(&ringCap) * 1000 / rate), underruns, calls,
+                minBuf == INT_MAX ? -1 : (int)(minBuf * 1000 / rate), (int)(maxBuf * 1000 / rate),
+                [AVAudioSession sharedInstance].IOBufferDuration * 1000,
+                audioEngine.isRunning ? "running" : "stopped", AudioRouteText());
+        }
+        audioDropped = audioPlayed = 0;
+        audioStatsLogged = now;
+    }
+
+    int decodeLen = opus_multistream_decode(opusDecoder, (unsigned char *)sampleData, sampleLength,
+                                            audioBuffer, audioConfig.samplesPerFrame, 0);
+    if (decodeLen <= 0) {
+        return;
+    }
+
+    uint64_t w = atomic_load_explicit(&ringWrite, memory_order_relaxed);
+    uint64_t r = atomic_load_explicit(&ringRead, memory_order_acquire);
+    if ((int)(w - r) + decodeLen > atomic_load(&ringCap)) {
+        // Already as far behind as we allow: keep the delay bounded rather than let it grow
         audioDropped++;
         return;
     }
-    audioPlayed++;
-    
-    decodeLen = opus_multistream_decode(opusDecoder, (unsigned char *)sampleData, sampleLength,
-                                        (short*)audioBuffer, audioConfig.samplesPerFrame, 0);
-    if (decodeLen > 0) {
-        // Provide backpressure on the queue to ensure too many frames don't build up
-        // in SDL's audio queue.
-        while (SDL_GetQueuedAudioSize(audioDevice) / audioFrameSize > 10) {
-            SDL_Delay(1);
-        }
-        
-        if (SDL_QueueAudio(audioDevice,
-                           audioBuffer,
-                           sizeof(short) * decodeLen * audioConfig.channelCount) < 0) {
-            Log(LOG_E, @"Failed to queue audio sample: %s\n", SDL_GetError());
-        } else {
-            audioPushedBytes += sizeof(short) * decodeLen * audioConfig.channelCount;
-        }
+    uint32_t at = (uint32_t)(w % ringFrames);
+    uint32_t first = MIN((uint32_t)decodeLen, ringFrames - at);
+    memcpy(ring + (size_t)at * ringChannels, audioBuffer, (size_t)first * ringChannels * sizeof(short));
+    if (first < (uint32_t)decodeLen) {
+        memcpy(ring, audioBuffer + (size_t)first * ringChannels, (size_t)(decodeLen - first) * ringChannels * sizeof(short));
     }
+    atomic_store_explicit(&ringWrite, w + decodeLen, memory_order_release);
+    audioPlayed++;
 }
 
 void ClStageStarting(int stage)
