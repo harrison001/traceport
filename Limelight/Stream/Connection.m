@@ -46,6 +46,41 @@ static void* audioBuffer;
 static int audioDropped, audioPlayed;
 static double audioStatsLogged;
 static int audioMaxPendingMs, audioMaxQueuedMs; // worst seen in the current 10 s window
+static long long audioPushedBytes, audioWindowStartQueued; // to work out how much SDL actually played
+
+static NSString *AudioRouteText(void) {
+    NSMutableArray *outs = [NSMutableArray array];
+    for (AVAudioSessionPortDescription *p in [AVAudioSession sharedInstance].currentRoute.outputs) {
+        [outs addObject:p.portType];
+    }
+    return [outs componentsJoinedByString:@"+"];
+}
+
+/// What iOS does to the audio session while streaming, as it happens (11-02: the sound stopped
+/// when the phone was locked and nothing said why)
+static void WatchAudioSession(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSNotificationCenter *nc = [NSNotificationCenter defaultCenter];
+        [nc addObserverForName:AVAudioSessionInterruptionNotification object:nil queue:nil usingBlock:^(NSNotification *n) {
+            NSUInteger type = [n.userInfo[AVAudioSessionInterruptionTypeKey] unsignedIntegerValue];
+            NSNumber *reason = n.userInfo[@"AVAudioSessionInterruptionReasonKey"];
+            NSNumber *options = n.userInfo[AVAudioSessionInterruptionOptionKey];
+            Log(LOG_I, @"Audio session: interruption %@ (reason %@, options %@), route %@",
+                type == AVAudioSessionInterruptionTypeBegan ? @"began" : @"ended", reason, options, AudioRouteText());
+        }];
+        [nc addObserverForName:AVAudioSessionRouteChangeNotification object:nil queue:nil usingBlock:^(NSNotification *n) {
+            Log(LOG_I, @"Audio session: route change (reason %@), now %@, category %@",
+                n.userInfo[AVAudioSessionRouteChangeReasonKey], AudioRouteText(), [AVAudioSession sharedInstance].category);
+        }];
+        [nc addObserverForName:AVAudioSessionMediaServicesWereResetNotification object:nil queue:nil usingBlock:^(NSNotification *n) {
+            Log(LOG_W, @"Audio session: media services were reset");
+        }];
+        [nc addObserverForName:AVAudioSessionSilenceSecondaryAudioHintNotification object:nil queue:nil usingBlock:^(NSNotification *n) {
+            Log(LOG_I, @"Audio session: silence-secondary-audio hint %@", n.userInfo[AVAudioSessionSilenceSecondaryAudioHintTypeKey]);
+        }];
+    });
+}
 static int audioFrameSize;
 
 /// Whether to drop the stream's sound on the floor.
@@ -252,6 +287,10 @@ int ArInit(int audioConfiguration, POPUS_MULTISTREAM_CONFIGURATION opusConfig, v
         return -1;
     }
     
+    WatchAudioSession();
+    audioPushedBytes = 0;
+    audioWindowStartQueued = 0;
+
     // Start playback
     SDL_PauseAudioDevice(audioDevice, 0);
     
@@ -328,11 +367,20 @@ void ArDecodeAndPlaySample(char* sampleData, int sampleLength)
             // Raw numbers to find out why it drops (11-02: 30-40% in the background, almost none in
             // front): how much iOS takes per audio callback, and the worst backlog on each side
             AVAudioSession *session = [AVAudioSession sharedInstance];
+            long long queuedNow = SDL_GetQueuedAudioSize(audioDevice);
+            long long playedBytes = audioPushedBytes - (queuedNow - audioWindowStartQueued);
+            SDL_AudioStatus status = SDL_GetAudioDeviceStatus(audioDevice);
             Log(LOG_I, @"Audio: dropped %d of %d packets in the last 10s (queue over 100 ms); "
-                "iOS buffer %.1f ms at %.0f Hz, max pending %d ms, max SDL queue %d ms",
+                "iOS buffer %.1f ms at %.0f Hz, max pending %d ms, max SDL queue %d ms; "
+                "SDL played %lld ms in %.1f s (%s), route %@, other audio %d, category %@",
                 audioDropped, audioDropped + audioPlayed,
-                session.IOBufferDuration * 1000, session.sampleRate, audioMaxPendingMs, audioMaxQueuedMs);
+                session.IOBufferDuration * 1000, session.sampleRate, audioMaxPendingMs, audioMaxQueuedMs,
+                bytesPerSecond > 0 ? playedBytes * 1000 / bytesPerSecond : 0, CACurrentMediaTime() - audioStatsLogged,
+                status == SDL_AUDIO_PLAYING ? "playing" : status == SDL_AUDIO_PAUSED ? "paused" : "stopped",
+                AudioRouteText(), session.isOtherAudioPlaying, session.category);
         }
+        audioPushedBytes = 0;
+        audioWindowStartQueued = SDL_GetQueuedAudioSize(audioDevice);
         audioDropped = audioPlayed = 0;
         audioMaxPendingMs = audioMaxQueuedMs = 0;
         audioStatsLogged = CACurrentMediaTime();
@@ -356,6 +404,8 @@ void ArDecodeAndPlaySample(char* sampleData, int sampleLength)
                            audioBuffer,
                            sizeof(short) * decodeLen * audioConfig.channelCount) < 0) {
             Log(LOG_E, @"Failed to queue audio sample: %s\n", SDL_GetError());
+        } else {
+            audioPushedBytes += sizeof(short) * decodeLen * audioConfig.channelCount;
         }
     }
 }
