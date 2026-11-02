@@ -67,6 +67,12 @@ static atomic_int ringPrefill, ringCap;     // frames: start playing at / never 
 static int audioDropped, audioPlayed;
 static double audioStatsLogged, audioLimitsSet;
 static atomic_int audioUnderruns, audioMinBuffered, audioMaxBuffered, audioCallbacks;
+static atomic_int audioCallMax;             // largest render call this second (frames)
+static atomic_int audioSecondMin;           // emptiest the ring got this second (frames)
+static int audioCallFrames;                 // largest render call over the last couple of seconds
+static double audioCallSeen;
+static int audioTrimFrames;                 // frames still to drop to bring the delay back down
+static int audioTrimmed;                    // packets dropped for that in the 10 s window
 
 static NSString *AudioRouteText(void) {
     NSMutableArray *outs = [NSMutableArray array];
@@ -259,8 +265,10 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit)
 /// more on some routes): enough that one call never finds the ring empty, little enough to keep
 /// the delay low.
 static void SetAudioLimits(void) {
-    double io = [AVAudioSession sharedInstance].IOBufferDuration;
     double rate = audioConfig.sampleRate;
+    // What iOS really asks for per call: IOBufferDuration says 21 ms with the phone locked while
+    // the calls come every 85 ms (11-02), so take the larger of the two.
+    double io = MAX([AVAudioSession sharedInstance].IOBufferDuration, audioCallFrames / rate);
     int prefill = (int)(MAX(0.030, io * 1.5) * rate);
     int cap = (int)(MAX(0.150, io * 3 + 0.030) * rate);
     if (cap > (int)ringFrames - 1) cap = (int)ringFrames - 1;
@@ -277,6 +285,8 @@ static OSStatus RenderAudio(BOOL *isSilence, AVAudioFrameCount frameCount, Audio
     }
     uint64_t avail = w - r;
     atomic_fetch_add(&audioCallbacks, 1);
+    if ((int)frameCount > atomic_load(&audioCallMax)) atomic_store(&audioCallMax, (int)frameCount);
+    if ((int)avail < atomic_load(&audioSecondMin)) atomic_store(&audioSecondMin, (int)avail);
     if ((int)avail < atomic_load(&audioMinBuffered)) atomic_store(&audioMinBuffered, (int)avail);
     if ((int)avail > atomic_load(&audioMaxBuffered)) atomic_store(&audioMaxBuffered, (int)avail);
 
@@ -351,6 +361,11 @@ int ArInit(int audioConfiguration, POPUS_MULTISTREAM_CONFIGURATION opusConfig, v
     atomic_store(&audioMinBuffered, INT_MAX);
     atomic_store(&audioMaxBuffered, 0);
     atomic_store(&audioUnderruns, 0);
+    atomic_store(&audioCallMax, 0);
+    atomic_store(&audioSecondMin, INT_MAX);
+    audioCallFrames = 0;
+    audioCallSeen = CACurrentMediaTime();
+    audioTrimFrames = audioTrimmed = 0;
     audioDropped = audioPlayed = 0;
     audioStatsLogged = CACurrentMediaTime();
 
@@ -490,7 +505,25 @@ void ArDecodeAndPlaySample(char* sampleData, int sampleLength)
 
     double now = CACurrentMediaTime();
     if (now - audioLimitsSet >= 1) {
-        SetAudioLimits();   // iOS may change its buffer when the app goes to the background
+        // iOS calls for more at a time in the background: follow it up, and back down two seconds
+        // after it stops
+        int call = atomic_exchange(&audioCallMax, 0);
+        if (call >= audioCallFrames) {
+            audioCallFrames = call;
+            audioCallSeen = now;
+        } else if (now - audioCallSeen >= 2) {
+            audioCallFrames = call;
+            audioCallSeen = now;
+        }
+        SetAudioLimits();
+        // A queue that never got below the cushion plus a margin for a whole second is delay
+        // nobody needs (it builds up while locked and stays after unlocking, putting the sound
+        // behind the picture): drop that much, a packet at a time
+        int secondMin = atomic_exchange(&audioSecondMin, INT_MAX);
+        int keep = atomic_load(&ringPrefill) + audioConfig.sampleRate / 50;   // cushion + 20 ms
+        if (secondMin != INT_MAX && secondMin > keep && atomic_load(&ringPrimed)) {
+            audioTrimFrames = secondMin - keep;
+        }
         audioLimitsSet = now;
     }
     if (now - audioStatsLogged >= 10) {
@@ -498,16 +531,18 @@ void ArDecodeAndPlaySample(char* sampleData, int sampleLength)
         int minBuf = atomic_exchange(&audioMinBuffered, INT_MAX);
         int maxBuf = atomic_exchange(&audioMaxBuffered, 0);
         int calls = atomic_exchange(&audioCallbacks, 0);
-        if (audioDropped > 0 || underruns > 0) {
+        if (audioDropped > 0 || underruns > 0 || audioTrimmed > 0) {
             double rate = audioConfig.sampleRate;
-            Log(LOG_I, @"Audio: %d packets played, %d dropped (over %d ms queued), %d run-dry in %d output calls; "
-                "queued %d-%d ms; iOS buffer %.1f ms; engine %s, route %@",
-                audioPlayed, audioDropped, (int)(atomic_load(&ringCap) * 1000 / rate), underruns, calls,
+            Log(LOG_I, @"Audio: %d packets played, %d dropped (over %d ms queued), %d trimmed, %d run-dry in %d output calls "
+                "(largest %d ms); queued %d-%d ms, cushion %d ms; iOS buffer %.1f ms; engine %s, route %@",
+                audioPlayed, audioDropped, (int)(atomic_load(&ringCap) * 1000 / rate), audioTrimmed, underruns, calls,
+                (int)(audioCallFrames * 1000 / rate),
                 minBuf == INT_MAX ? -1 : (int)(minBuf * 1000 / rate), (int)(maxBuf * 1000 / rate),
+                (int)(atomic_load(&ringPrefill) * 1000 / rate),
                 [AVAudioSession sharedInstance].IOBufferDuration * 1000,
                 audioEngine.isRunning ? "running" : "stopped", AudioRouteText());
         }
-        audioDropped = audioPlayed = 0;
+        audioDropped = audioPlayed = audioTrimmed = 0;
         audioStatsLogged = now;
     }
 
@@ -517,6 +552,11 @@ void ArDecodeAndPlaySample(char* sampleData, int sampleLength)
         return;
     }
 
+    if (audioTrimFrames > 0) {
+        audioTrimFrames -= decodeLen;
+        audioTrimmed++;
+        return;
+    }
     uint64_t w = atomic_load_explicit(&ringWrite, memory_order_relaxed);
     uint64_t r = atomic_load_explicit(&ringRead, memory_order_acquire);
     if ((int)(w - r) + decodeLen > atomic_load(&ringCap)) {
