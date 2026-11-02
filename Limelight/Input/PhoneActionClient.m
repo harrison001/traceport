@@ -383,7 +383,7 @@ didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge
         NSString *why = [call[@"why"] isKindOfClass:[NSString class]] ? call[@"why"] : @"ended";
         // finish with the push while the call still exists (that satisfies PushKit), then end it
         completion();
-        if ([why isEqualToString:@"answered"] && [known[@"answered"] boolValue]) {
+        if ([why isEqualToString:@"answered"] && ([known[@"answered"] boolValue] || [known[@"answering"] boolValue])) {
             // the phone picked up because we asked: the call goes on
             known[@"ringing"] = @NO;
             return;
@@ -576,14 +576,21 @@ didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge
 }
 
 - (void)provider:(CXProvider *)provider performAnswerCallAction:(CXAnswerCallAction *)action {
+    // "answering" until the gateway says the phone picked up: only then is the call handed to the
+    // stream (11-01: the app came to the front before a late answer failed and handed off a call
+    // that had already ended at home)
     NSMutableDictionary *call = _calls[action.callUUID];
-    call[@"answered"] = @YES;
+    call[@"answering"] = @YES;
     [self control:@"answer" uuid:action.callUUID done:^(BOOL ok, NSString *hostUuid) {
         if (!ok) {
+            Log(LOG_W, @"Calls: answer did not reach the phone; nothing to hand to the stream");
             [action fail];
             [self->_calls removeObjectForKey:action.callUUID];
             return;
         }
+        NSMutableDictionary *now = self->_calls[action.callUUID];
+        [now removeObjectForKey:@"answering"];
+        now[@"answered"] = @YES;
         [action fulfill];
         // the call's sound comes through the phone's stream: open it. In front, the system call
         // steps aside right away; in the background or locked it stays (the green call indicator
