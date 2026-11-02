@@ -73,6 +73,12 @@ static int audioCallFrames;                 // largest render call over the last
 static double audioCallSeen;
 static int audioTrimFrames;                 // frames still to drop to bring the delay back down
 static int audioTrimmed;                    // packets dropped for that in the 10 s window
+static atomic_int audioSecondUnderruns;     // run-dry calls this second
+static int audioExtraFrames;                // cushion added after run-dries (network jitter)
+static double audioCalmSince;               // since when nothing ran dry
+static int audioHighSeconds;                // seconds in a row the queue stayed well above the cushion
+static atomic_bool ringFadeIn;              // ramp the first samples after a gap up from silence
+#define FADE_FRAMES 96                      // 2 ms at 48 kHz: no click where the sound stops or starts
 
 static NSString *AudioRouteText(void) {
     NSMutableArray *outs = [NSMutableArray array];
@@ -269,8 +275,8 @@ static void SetAudioLimits(void) {
     // What iOS really asks for per call: IOBufferDuration says 21 ms with the phone locked while
     // the calls come every 85 ms (11-02), so take the larger of the two.
     double io = MAX([AVAudioSession sharedInstance].IOBufferDuration, audioCallFrames / rate);
-    int prefill = (int)(MAX(0.030, io * 1.5) * rate);
-    int cap = (int)(MAX(0.150, io * 3 + 0.030) * rate);
+    int prefill = (int)(MAX(0.030, io * 1.5) * rate) + audioExtraFrames;
+    int cap = (int)(MAX(0.150, io * 3 + 0.030) * rate) + audioExtraFrames;
     if (cap > (int)ringFrames - 1) cap = (int)ringFrames - 1;
     atomic_store(&ringPrefill, prefill);
     atomic_store(&ringCap, cap);
@@ -294,13 +300,18 @@ static OSStatus RenderAudio(BOOL *isSilence, AVAudioFrameCount frameCount, Audio
     if (!primed && (int)avail >= atomic_load(&ringPrefill)) {
         primed = true;
         atomic_store(&ringPrimed, true);
+        atomic_store(&ringFadeIn, true);
     }
     uint32_t n = primed ? (uint32_t)MIN(avail, (uint64_t)frameCount) : 0;
+    bool fadeOut = false;
     if (primed && n < frameCount) {
         // ran dry: fill the rest with silence and build the cushion up again before going on
         atomic_fetch_add(&audioUnderruns, 1);
+        atomic_fetch_add(&audioSecondUnderruns, 1);
         atomic_store(&ringPrimed, false);
+        fadeOut = true;
     }
+    bool fadeIn = n > 0 && atomic_exchange(&ringFadeIn, false);
 
     int ch = ringChannels;
     if (out->mNumberBuffers == (UInt32)ch) {
@@ -319,6 +330,21 @@ static OSStatus RenderAudio(BOOL *isSilence, AVAudioFrameCount frameCount, Audio
             }
         }
         memset(dst + n * ch, 0, (frameCount - n) * ch * sizeof(float));
+    }
+    // A sound that stops dead or starts at full level clicks: ramp the edges over 2 ms
+    if (fadeIn || fadeOut) {
+        uint32_t f = MIN((uint32_t)FADE_FRAMES, n);
+        for (UInt32 b = 0; b < out->mNumberBuffers; b++) {
+            float *dst = (float *)out->mBuffers[b].mData;
+            int stride = out->mNumberBuffers == 1 ? ch : 1;
+            for (uint32_t i = 0; i < f; i++) {
+                float g = (float)i / f;
+                for (int c = 0; c < stride; c++) {
+                    if (fadeIn) dst[i * stride + c] *= g;
+                    if (fadeOut) dst[(n - 1 - i) * stride + c] *= g;
+                }
+            }
+        }
     }
     atomic_store_explicit(&ringRead, r + n, memory_order_release);
     *isSilence = (n == 0);
@@ -366,6 +392,11 @@ int ArInit(int audioConfiguration, POPUS_MULTISTREAM_CONFIGURATION opusConfig, v
     audioCallFrames = 0;
     audioCallSeen = CACurrentMediaTime();
     audioTrimFrames = audioTrimmed = 0;
+    audioExtraFrames = 0;
+    audioHighSeconds = 0;
+    audioCalmSince = CACurrentMediaTime();
+    atomic_store(&audioSecondUnderruns, 0);
+    atomic_store(&ringFadeIn, false);
     audioDropped = audioPlayed = 0;
     audioStatsLogged = CACurrentMediaTime();
 
@@ -515,14 +546,31 @@ void ArDecodeAndPlaySample(char* sampleData, int sampleLength)
             audioCallFrames = call;
             audioCallSeen = now;
         }
+        // Ran dry: the network is jittery right now, so keep 10 ms more in hand (up to 120 ms).
+        // Calm for 10 s: give 2 ms back. A cushion that only grows would just add delay. (11-02:
+        // a fixed 32 ms ran dry 1-9 times per 10 s and the gaps sounded like hiss.)
+        int dries = atomic_exchange(&audioSecondUnderruns, 0);
+        int rate = audioConfig.sampleRate;
+        if (dries > 0) {
+            audioExtraFrames = MIN(audioExtraFrames + rate / 100, rate * 120 / 1000);
+            audioCalmSince = now;
+        } else if (now - audioCalmSince >= 10 && audioExtraFrames > 0) {
+            audioExtraFrames = MAX(0, audioExtraFrames - rate / 500);
+            audioCalmSince = now;
+        }
         SetAudioLimits();
-        // A queue that never got below the cushion plus a margin for a whole second is delay
-        // nobody needs (it builds up while locked and stays after unlocking, putting the sound
-        // behind the picture): drop that much, a packet at a time
+        // A queue that stayed 40 ms above the cushion for 3 seconds in a row is delay nobody needs
+        // (it builds up while locked and stays after unlocking, putting the sound behind the
+        // picture): drop that much, a packet at a time. Not sooner: every drop is a small gap.
         int secondMin = atomic_exchange(&audioSecondMin, INT_MAX);
-        int keep = atomic_load(&ringPrefill) + audioConfig.sampleRate / 50;   // cushion + 20 ms
+        int keep = atomic_load(&ringPrefill) + rate / 25;   // cushion + 40 ms
         if (secondMin != INT_MAX && secondMin > keep && atomic_load(&ringPrimed)) {
-            audioTrimFrames = secondMin - keep;
+            if (++audioHighSeconds >= 3) {
+                audioTrimFrames = secondMin - keep;
+                audioHighSeconds = 0;
+            }
+        } else {
+            audioHighSeconds = 0;
         }
         audioLimitsSet = now;
     }

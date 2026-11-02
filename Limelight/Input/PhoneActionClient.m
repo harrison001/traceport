@@ -25,6 +25,8 @@ NSString *TracePortPendingCallHost = nil;
 @interface PhoneActionClient () <NSURLSessionDelegate>
 @end
 
+static NSString *CallAppName(NSDictionary *call);
+
 @implementation PhoneActionClient {
     NSString *_base;
     NSData *_serverCert;
@@ -333,10 +335,10 @@ didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge
         NSString *number = [call[@"number"] isKindOfClass:[NSString class]] ? call[@"number"] : @"";
         CXCallUpdate *update = [[CXCallUpdate alloc] init];
         update.remoteHandle = [self handleFor:call];
-        // who and through what: "Alice · WeChat" for a WeChat invite, "+1 555… · home phone" for a call
-        NSString *source = [call[@"source"] isKindOfClass:[NSString class]] ? call[@"source"] : @"";
+        // who and through what: "Alice · WhatsApp" for an app's call, "+1 555… · home phone" for a call
+        NSString *app = CallAppName(call);
         BOOL video = [call[@"kind"] isEqual:@"video"];
-        NSString *via = [source isEqualToString:@"wechat"] ? (video ? @"WeChat video" : @"WeChat") : @"home phone";
+        NSString *via = app != nil ? (video ? [app stringByAppendingString:@" video"] : app) : @"home phone";
         update.localizedCallerName = [NSString stringWithFormat:@"%@ · %@",
                                       name.length > 0 ? name : (number.length > 0 ? number : @"Unknown"), via];
         update.hasVideo = NO;
@@ -417,13 +419,25 @@ didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge
     }];
 }
 
+/// Which app the call comes through, for "Alice · WhatsApp": nil for an ordinary phone call.
+static NSString *CallAppName(NSDictionary *call) {
+    NSString *source = [call[@"source"] isKindOfClass:[NSString class]] ? call[@"source"] : @"";
+    NSDictionary<NSString *, NSString *> *names = @{
+        @"wechat": @"WeChat", @"whatsapp": @"WhatsApp", @"messenger": @"Messenger",
+        @"telegram": @"Telegram", @"line": @"LINE", @"signal": @"Signal", @"skype": @"Skype",
+        @"viber": @"Viber", @"facetime": @"FaceTime", @"teams": @"Teams", @"zoom": @"Zoom",
+        @"meet": @"Google Meet", @"app": @"app call",
+    };
+    return names[source];
+}
+
 /// The notice shown instead of the ring when a Focus silenced the call. Tapping it opens the
 /// phone's stream, where the call is still ringing (and rings here too once TracePort is in front).
 - (void)postSilencedNotice:(NSDictionary *)call gateway:(nullable NSString *)base missed:(BOOL)missed {
     NSString *name = [call[@"name"] isKindOfClass:[NSString class]] ? call[@"name"] : @"";
     NSString *number = [call[@"number"] isKindOfClass:[NSString class]] ? call[@"number"] : @"";
     NSString *who = name.length > 0 ? name : (number.length > 0 ? number : @"Someone");
-    BOOL wechat = [call[@"source"] isEqual:@"wechat"];
+    NSString *app = CallAppName(call);
 
     NSDictionary<NSString *, NSDictionary *> *gateways = [PhoneActionClient knownGateways];
     NSString *host = base != nil ? gateways[base][@"uuid"] : nil;
@@ -436,10 +450,12 @@ didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge
     UNMutableNotificationContent *content = [[UNMutableNotificationContent alloc] init];
     BOOL video = [call[@"kind"] isEqual:@"video"];
     if (missed) {
-        content.title = wechat ? (video ? @"Missed WeChat video call · home phone" : @"Missed WeChat call · home phone") : @"Missed call · home phone";
+        content.title = app != nil && ![app isEqualToString:@"app call"]
+            ? [NSString stringWithFormat:@"Missed %@ %@call · home phone", app, video ? @"video " : @""] : @"Missed call · home phone";
         content.body = [NSString stringWithFormat:@"%@ called while a Focus was on.", who];
     } else {
-        content.title = wechat ? (video ? @"WeChat video call · home phone" : @"WeChat call · home phone") : @"Incoming call · home phone";
+        content.title = app != nil && ![app isEqualToString:@"app call"]
+            ? [NSString stringWithFormat:@"%@ %@call · home phone", app, video ? @"video " : @""] : @"Incoming call · home phone";
         content.body = [NSString stringWithFormat:@"%@ is calling. Focus silenced the ring — tap to open the phone and answer.", who];
         content.sound = [UNNotificationSound defaultSound];
     }
