@@ -77,7 +77,8 @@ static atomic_int audioSecondUnderruns;     // run-dry calls this second
 static int audioExtraFrames;                // cushion added after run-dries (network jitter)
 static double audioCalmSince;               // since when nothing ran dry
 static int audioHighSeconds;                // seconds in a row the queue stayed well above the cushion
-static atomic_bool ringFadeIn;              // ramp the first samples after a gap up from silence
+static atomic_bool ringFadeIn;
+static int audioSecondPackets;              // packets that arrived this second (200 expected at 5 ms)              // ramp the first samples after a gap up from silence
 #define FADE_FRAMES 96                      // 2 ms at 48 kHz: no click where the sound stops or starts
 
 static NSString *AudioRouteText(void) {
@@ -394,6 +395,7 @@ int ArInit(int audioConfiguration, POPUS_MULTISTREAM_CONFIGURATION opusConfig, v
     audioTrimFrames = audioTrimmed = 0;
     audioExtraFrames = 0;
     audioHighSeconds = 0;
+    audioSecondPackets = 0;
     audioCalmSince = CACurrentMediaTime();
     atomic_store(&audioSecondUnderruns, 0);
     atomic_store(&ringFadeIn, false);
@@ -533,6 +535,7 @@ void ArDecodeAndPlaySample(char* sampleData, int sampleLength)
     if (opusDecoder == NULL || ring == NULL) {
         return;
     }
+    audioSecondPackets++;
 
     double now = CACurrentMediaTime();
     if (now - audioLimitsSet >= 1) {
@@ -546,13 +549,19 @@ void ArDecodeAndPlaySample(char* sampleData, int sampleLength)
             audioCallFrames = call;
             audioCallSeen = now;
         }
-        // Ran dry: the network is jittery right now, so keep 10 ms more in hand (up to 120 ms).
+        // Ran dry: the network is jittery right now, so keep 10 ms more in hand (up to 80 ms).
         // Calm for 10 s: give 2 ms back. A cushion that only grows would just add delay. (11-02:
         // a fixed 32 ms ran dry 1-9 times per 10 s and the gaps sounded like hiss.)
         int dries = atomic_exchange(&audioSecondUnderruns, 0);
         int rate = audioConfig.sampleRate;
-        if (dries > 0) {
-            audioExtraFrames = MIN(audioExtraFrames + rate / 100, rate * 120 / 1000);
+        // Packets lost on the way also run the ring dry, and no cushion brings them back: it only
+        // adds delay (11-03: lossy Wi-Fi pushed it to the 150 ms cap). Grow only when everything
+        // arrived, i.e. the packets were late, not missing.
+        int expected = (int)((now - audioLimitsSet) * rate / audioConfig.samplesPerFrame);
+        bool lossy = audioSecondPackets < expected - 2;
+        audioSecondPackets = 0;
+        if (dries > 0 && !lossy) {
+            audioExtraFrames = MIN(audioExtraFrames + rate / 100, rate * 80 / 1000);
             audioCalmSince = now;
         } else if (now - audioCalmSince >= 10 && audioExtraFrames > 0) {
             audioExtraFrames = MAX(0, audioExtraFrames - rate / 500);
