@@ -65,6 +65,10 @@ extern NSString *_Nullable TracePortPendingCallHost;
 /// unreachable. Main queue.
 - (void)fetchStatus:(void (^)(NSDictionary *_Nullable status))completion;
 
+/// Where the phone's focused text input is: {x, y, w, h, source: "caret"} as fractions of the
+/// screen, {} when nothing is focused or the gateway cannot tell, nil when unreachable. Main queue.
+- (void)fetchCaret:(void (^)(NSDictionary *_Nullable caret))completion;
+
 /// Push notifications from the gateway ("needs you" alerts, sent through Apple's push service).
 /// Asks for permission once and registers with iOS; the token arrives in the app delegate.
 + (void)requestPushPermission;

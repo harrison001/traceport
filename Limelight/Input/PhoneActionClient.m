@@ -216,6 +216,13 @@ static NSString *CallAppName(NSDictionary *call);
     [self send:request completion:completion];
 }
 
+- (void)fetchCaret:(void (^)(NSDictionary *_Nullable))completion {
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:
+                                    [NSURL URLWithString:[_base stringByAppendingString:@"/phone/caret"]]];
+    request.timeoutInterval = 4.0;
+    [self send:request completion:completion];
+}
+
 - (void)fetchStatus:(void (^)(NSDictionary *_Nullable))completion {
     NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:
                                     [NSURL URLWithString:[_base stringByAppendingString:@"/phone/status"]]];

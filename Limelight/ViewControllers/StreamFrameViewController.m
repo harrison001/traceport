@@ -484,6 +484,7 @@ enum { kMicFrameBytes = 640 };              // 20 ms of 16 kHz mono s16
         [self buildPhoneToast];
         [self setUpRealTouch];
         _phoneClient.hostUuid = _streamConfig.hostUuid;
+        _streamView.phoneCaretClient = _phoneClient;   // where the phone's text field is, from WDA
         [self startPhoneStatus];
         // the gateway pushes "needs you" alerts to this device
         [PhoneActionClient requestPushPermission];

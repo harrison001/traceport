@@ -18,6 +18,7 @@
 #if !TARGET_OS_TV
 #import "KeyBarView.h"
 #import "CaretTracker.h"
+#import "PhoneActionClient.h"
 
 @interface StreamView () <KeyBarViewDelegate, KeyBarPadObserver>
 @end
@@ -38,6 +39,8 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     /// stream leaves no letterbox to put them in, and then keyBar carries both.
     KeyBarView* macroPad;
     CaretTracker* caretTracker;
+    NSTimer* phoneCaretTimer;       // phone host: asks the gateway where the focused field is
+    BOOL phoneCaretInFlight;
     /// How far the picture is currently lifted to clear the keyboard.
     CGFloat pictureLift;
     BOOL caretLogged;
@@ -571,7 +574,24 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     if (!systemKeyboardVisible) {
         [caretTracker stop];
         caretTracker = nil;
+        [phoneCaretTimer invalidate];
+        phoneCaretTimer = nil;
         [self liftPictureBy:0];
+        return;
+    }
+    if (self.phoneCaretClient != nil) {
+        // The phone: its own keyboard sits right under the field it is typing into, so lifting
+        // the field just clear of ours also tucks the phone's keyboard behind ours — one keyboard
+        // on screen, the line being typed right above it. Once a second is enough (the field
+        // stays put while typing) and keeps WDA, which serves touches too, free.
+        if (phoneCaretTimer == nil) {
+            caretLogged = NO;
+            __weak StreamView *weakSelf = self;
+            phoneCaretTimer = [NSTimer scheduledTimerWithTimeInterval:1.0 repeats:YES block:^(NSTimer *t) {
+                [weakSelf pollPhoneCaret];
+            }];
+            [self pollPhoneCaret];
+        }
         return;
     }
     if (caretTracker != nil) {
@@ -587,6 +607,27 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
         [weakSelf caretMovedTo:normalisedCaret precise:precise];
     };
     [caretTracker start];
+}
+
+- (void)pollPhoneCaret {
+    if (phoneCaretInFlight || self.phoneCaretClient == nil) {
+        return;
+    }
+    phoneCaretInFlight = YES;
+    __weak StreamView *weakSelf = self;
+    [self.phoneCaretClient fetchCaret:^(NSDictionary *caret) {
+        StreamView *strongSelf = weakSelf;
+        if (strongSelf == nil) {
+            return;
+        }
+        strongSelf->phoneCaretInFlight = NO;
+        if (strongSelf->phoneCaretTimer == nil || ![caret[@"y"] isKindOfClass:[NSNumber class]]) {
+            return; // nothing focused, or the gateway could not say: leave the picture where it is
+        }
+        CGRect r = CGRectMake([caret[@"x"] doubleValue], [caret[@"y"] doubleValue],
+                              [caret[@"w"] doubleValue], [caret[@"h"] doubleValue]);
+        [strongSelf caretMovedTo:r precise:YES];
+    }];
 }
 
 /// Lifts the picture just far enough that the caret clears the top of the keyboard.
@@ -844,6 +885,8 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
 /// subsequent keystroke would silently arrive modified.
 - (void)dismissKeyBar {
     [caretTracker stop];
+    [phoneCaretTimer invalidate];
+    phoneCaretTimer = nil;
     caretTracker = nil;
     [self liftPictureBy:0];
     [self teardownKeyboardBar];
