@@ -45,9 +45,9 @@
 /// pointer. Taken up at the start of the next gesture, never in the middle of one.
 @property (nonatomic, strong) UIResponder *realTouchHandler;
 
-/// Phone host: where its focused text field is comes from the gateway (WDA), not from the host's
-/// /caret, which on the gateway can only report a pointer that real touch never moves.
-@property (nonatomic, strong, nullable) PhoneActionClient *phoneCaretClient;
+/// Phone host: typing goes through a compose bar above the keyboard and from there straight to
+/// the gateway, which puts it in the phone's focused field with WDA (no keys, no Sunshine).
+@property (nonatomic, strong, nullable) PhoneActionClient *phoneClient;
 
 /// Phone host: does one of the phone's own actions from the key line (home, apps, back...), or
 /// "touchmode" to switch between real touch and the pointer. Unset, the line sends the F13–F23

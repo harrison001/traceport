@@ -223,6 +223,16 @@ static NSString *CallAppName(NSDictionary *call);
     [self send:request completion:completion];
 }
 
+- (void)sendText:(NSString *)text enter:(BOOL)enter delete:(NSInteger)del completion:(void (^)(NSDictionary *_Nullable))completion {
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:
+                                    [NSURL URLWithString:[_base stringByAppendingString:@"/phone/text"]]];
+    request.HTTPMethod = @"POST";
+    request.timeoutInterval = 15.0;
+    [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
+    request.HTTPBody = [NSJSONSerialization dataWithJSONObject:@{@"text": text ?: @"", @"enter": @(enter), @"delete": @(del)} options:0 error:nil];
+    [self send:request completion:completion];
+}
+
 - (void)fetchStatus:(void (^)(NSDictionary *_Nullable))completion {
     NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:
                                     [NSURL URLWithString:[_base stringByAppendingString:@"/phone/status"]]];

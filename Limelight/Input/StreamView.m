@@ -26,6 +26,121 @@
 
 static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
 
+
+#if !TARGET_OS_TV
+/// The compose bar's field: Backspace with nothing in it deletes on the phone instead.
+@interface PhoneComposeField : UITextField
+@property (nonatomic, copy) void (^onDeleteWhenEmpty)(void);
+@end
+
+@implementation PhoneComposeField
+- (void)deleteBackward {
+    if (self.text.length == 0 && self.markedTextRange == nil && self.onDeleteWhenEmpty) {
+        self.onDeleteWhenEmpty();
+        return;
+    }
+    [super deleteBackward];
+}
+@end
+
+/// Typing for a phone host (2026-11-03). Text is written here, with the local keyboard, its input
+/// methods and emoji, and goes to the phone in one piece: Return types it there and presses
+/// Return (a chat sends it), "Insert" types it without. Nothing travels per key, so nothing is
+/// lost or mangled on the way, the phone's field changes once, and what is being written is
+/// right above the keyboard instead of under it.
+@interface PhoneComposeBar : UIView <UITextFieldDelegate>
+@property (nonatomic, strong, readonly) PhoneComposeField *field;
+@property (nonatomic, copy) void (^onSend)(NSString *text, BOOL enter);
+@property (nonatomic, copy) void (^onDeleteOnPhone)(void);
+- (void)showNote:(nullable NSString *)note;
+@end
+
+@implementation PhoneComposeBar {
+    UIButton *_insert;
+    UIButton *_send;
+}
+
+- (instancetype)initWithFrame:(CGRect)frame {
+    self = [super initWithFrame:frame];
+    if (self == nil) return nil;
+    self.backgroundColor = [UIColor colorWithWhite:0.12 alpha:0.96];
+
+    _field = [[PhoneComposeField alloc] init];
+    _field.translatesAutoresizingMaskIntoConstraints = NO;
+    _field.borderStyle = UITextBorderStyleRoundedRect;
+    _field.backgroundColor = [UIColor colorWithWhite:0.22 alpha:1];
+    _field.textColor = UIColor.whiteColor;
+    _field.tintColor = UIColor.systemGreenColor;
+    _field.keyboardAppearance = UIKeyboardAppearanceDark;
+    _field.returnKeyType = UIReturnKeySend;
+    _field.enablesReturnKeyAutomatically = NO;
+    _field.delegate = self;
+    __weak PhoneComposeBar *weakSelf = self;
+    _field.onDeleteWhenEmpty = ^{
+        PhoneComposeBar *strongSelf = weakSelf;
+        if (strongSelf.onDeleteOnPhone) strongSelf.onDeleteOnPhone();
+    };
+    [self showNote:nil];
+
+    _insert = [UIButton buttonWithType:UIButtonTypeSystem];
+    _insert.translatesAutoresizingMaskIntoConstraints = NO;
+    [_insert setTitle:@"Insert" forState:UIControlStateNormal];
+    _insert.tintColor = UIColor.whiteColor;
+    [_insert addTarget:self action:@selector(insertTapped) forControlEvents:UIControlEventTouchUpInside];
+
+    _send = [UIButton buttonWithType:UIButtonTypeSystem];
+    _send.translatesAutoresizingMaskIntoConstraints = NO;
+    [_send setImage:[UIImage systemImageNamed:@"arrow.up.circle.fill"] forState:UIControlStateNormal];
+    _send.tintColor = UIColor.systemGreenColor;
+    _send.accessibilityLabel = @"Send";
+    [_send addTarget:self action:@selector(sendTapped) forControlEvents:UIControlEventTouchUpInside];
+
+    [self addSubview:_field];
+    [self addSubview:_insert];
+    [self addSubview:_send];
+    UILayoutGuide *safe = self.safeAreaLayoutGuide;
+    [NSLayoutConstraint activateConstraints:@[
+        [_field.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:8],
+        [_field.topAnchor constraintEqualToAnchor:self.topAnchor constant:6],
+        [_field.bottomAnchor constraintEqualToAnchor:self.bottomAnchor constant:-6],
+        [_insert.leadingAnchor constraintEqualToAnchor:_field.trailingAnchor constant:8],
+        [_insert.centerYAnchor constraintEqualToAnchor:_field.centerYAnchor],
+        [_send.leadingAnchor constraintEqualToAnchor:_insert.trailingAnchor constant:6],
+        [_send.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-8],
+        [_send.centerYAnchor constraintEqualToAnchor:_field.centerYAnchor],
+        [_send.widthAnchor constraintEqualToConstant:36],
+        [_send.heightAnchor constraintEqualToConstant:36],
+        [self.heightAnchor constraintEqualToConstant:48],
+    ]];
+    [_insert setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+    return self;
+}
+
+- (void)showNote:(NSString *)note {
+    NSString *text = note ?: @"Write here · Return sends to the phone";
+    UIColor *color = note != nil ? UIColor.systemOrangeColor : [UIColor colorWithWhite:0.6 alpha:1];
+    _field.attributedPlaceholder = [[NSAttributedString alloc] initWithString:text attributes:@{NSForegroundColorAttributeName: color}];
+}
+
+- (void)fire:(BOOL)enter {
+    if (_field.markedTextRange != nil) {
+        [_field unmarkText]; // a composition in progress is what the user sees: take it as is
+    }
+    NSString *text = _field.text ?: @"";
+    _field.text = @"";
+    if (self.onSend) self.onSend(text, enter);
+}
+
+- (void)insertTapped { [self fire:NO]; }
+- (void)sendTapped { [self fire:YES]; }
+
+- (BOOL)textFieldShouldReturn:(UITextField *)textField {
+    [self fire:YES];
+    return NO;
+}
+@end
+#endif
+
 @implementation StreamView {
     OnScreenControls* onScreenControls;
 
@@ -39,8 +154,13 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     /// stream leaves no letterbox to put them in, and then keyBar carries both.
     KeyBarView* macroPad;
     CaretTracker* caretTracker;
-    NSTimer* phoneCaretTimer;       // phone host: asks the gateway where the focused field is
-    BOOL phoneCaretInFlight;
+#if !TARGET_OS_TV
+    PhoneComposeBar* composeBar;    // phone host: where text is written before it goes to the phone
+    NSMutableArray<NSDictionary *>* composeQueue;   // sent one at a time, in order
+    BOOL composeSending;
+    NSTimer* phoneFieldTimer;       // where the phone's field is, so it can be kept in sight
+    BOOL phoneFieldAsking;
+#endif
     /// How far the picture is currently lifted to clear the keyboard.
     CGFloat pictureLift;
     BOOL caretLogged;
@@ -540,9 +660,13 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
         [keyBar setAxis:UILayoutConstraintAxisHorizontal];
         keyBar.translatesAutoresizingMaskIntoConstraints = YES;
 
-        keyInputField.inputAccessoryView = keyBar;
-        [keyInputField reloadInputViews];
-        [keyInputField becomeFirstResponder];
+        if (self.phoneClient != nil) {
+            [self showComposeBar];
+        } else {
+            keyInputField.inputAccessoryView = keyBar;
+            [keyInputField reloadInputViews];
+            [keyInputField becomeFirstResponder];
+        }
         // The keyboard's own guide takes over keeping the columns clear.
         macroPad.bottomInset = 0;
     } else {
@@ -553,6 +677,7 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
         // a UICompatibilityInputViewController owned by the keyboard's UIInputWindowController;
         // moving the view out while that is still standing throws
         // UIViewControllerHierarchyInconsistency. Resigning takes the wrapper down first.
+        [self hideComposeBar];
         [keyInputField resignFirstResponder];
         keyInputField.inputAccessoryView = nil;
         [self pinKeyBar];
@@ -574,23 +699,24 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     if (!systemKeyboardVisible) {
         [caretTracker stop];
         caretTracker = nil;
-        [phoneCaretTimer invalidate];
-        phoneCaretTimer = nil;
+#if !TARGET_OS_TV
+        [phoneFieldTimer invalidate];
+        phoneFieldTimer = nil;
+#endif
         [self liftPictureBy:0];
         return;
     }
-    if (self.phoneCaretClient != nil) {
-        // The phone: its own keyboard sits right under the field it is typing into, so lifting
-        // the field just clear of ours also tucks the phone's keyboard behind ours — one keyboard
-        // on screen, the line being typed right above it. Once a second is enough (the field
-        // stays put while typing) and keeps WDA, which serves touches too, free.
-        if (phoneCaretTimer == nil) {
+    if (self.phoneClient != nil) {
+        // The phone: keep its focused field — where the text will land — in sight above the
+        // compose bar. Its frame comes from WDA through the gateway, not from a pointer, so the
+        // picture moves only when the field does (2026-11-03).
+        if (phoneFieldTimer == nil) {
             caretLogged = NO;
             __weak StreamView *weakSelf = self;
-            phoneCaretTimer = [NSTimer scheduledTimerWithTimeInterval:1.0 repeats:YES block:^(NSTimer *t) {
-                [weakSelf pollPhoneCaret];
+            phoneFieldTimer = [NSTimer scheduledTimerWithTimeInterval:1.5 repeats:YES block:^(NSTimer *t) {
+                [weakSelf askWherePhoneFieldIs];
             }];
-            [self pollPhoneCaret];
+            [self askWherePhoneFieldIs];
         }
         return;
     }
@@ -609,26 +735,122 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     [caretTracker start];
 }
 
-- (void)pollPhoneCaret {
-    if (phoneCaretInFlight || self.phoneCaretClient == nil) {
+#if !TARGET_OS_TV
+#pragma mark - Phone host: the compose bar
+
+- (void)showComposeBar {
+    if (composeBar == nil) {
+        composeBar = [[PhoneComposeBar alloc] initWithFrame:CGRectZero];
+        composeBar.translatesAutoresizingMaskIntoConstraints = NO;
+        composeQueue = [NSMutableArray array];
+        __weak StreamView *weakSelf = self;
+        composeBar.onSend = ^(NSString *text, BOOL enter) {
+            [weakSelf queueCompose:@{@"text": text, @"enter": @(enter), @"delete": @0}];
+        };
+        composeBar.onDeleteOnPhone = ^{
+            [weakSelf queueCompose:@{@"text": @"", @"enter": @NO, @"delete": @1}];
+        };
+    }
+    UIView *host = [self keyBarHostView];
+    if (composeBar.superview != host) {
+        [composeBar removeFromSuperview];
+        [host addSubview:composeBar];
+        NSLayoutYAxisAnchor *above = host.bottomAnchor;
+        if (@available(iOS 15.0, *)) {
+            above = host.keyboardLayoutGuide.topAnchor;   // the keyboard, its key line included
+        }
+        [NSLayoutConstraint activateConstraints:@[
+            [composeBar.leadingAnchor constraintEqualToAnchor:host.leadingAnchor],
+            [composeBar.trailingAnchor constraintEqualToAnchor:host.trailingAnchor],
+            [composeBar.bottomAnchor constraintEqualToAnchor:above],
+        ]];
+    }
+    composeBar.field.inputAccessoryView = keyBar;
+    [composeBar.field reloadInputViews];
+    [composeBar.field becomeFirstResponder];
+}
+
+- (void)askWherePhoneFieldIs {
+    if (phoneFieldAsking || self.phoneClient == nil || phoneFieldTimer == nil) {
         return;
     }
-    phoneCaretInFlight = YES;
+    phoneFieldAsking = YES;
     __weak StreamView *weakSelf = self;
-    [self.phoneCaretClient fetchCaret:^(NSDictionary *caret) {
+    [self.phoneClient fetchCaret:^(NSDictionary *caret) {
         StreamView *strongSelf = weakSelf;
         if (strongSelf == nil) {
             return;
         }
-        strongSelf->phoneCaretInFlight = NO;
-        if (strongSelf->phoneCaretTimer == nil || ![caret[@"y"] isKindOfClass:[NSNumber class]]) {
-            return; // nothing focused, or the gateway could not say: leave the picture where it is
+        strongSelf->phoneFieldAsking = NO;
+        if (strongSelf->phoneFieldTimer == nil || ![caret[@"y"] isKindOfClass:[NSNumber class]]) {
+            return; // nothing focused, or no answer: leave the picture where it is
         }
-        CGRect r = CGRectMake([caret[@"x"] doubleValue], [caret[@"y"] doubleValue],
-                              [caret[@"w"] doubleValue], [caret[@"h"] doubleValue]);
-        [strongSelf caretMovedTo:r precise:YES];
+        [strongSelf caretMovedTo:CGRectMake([caret[@"x"] doubleValue], [caret[@"y"] doubleValue],
+                                            [caret[@"w"] doubleValue], [caret[@"h"] doubleValue])
+                         precise:YES];
     }];
 }
+
+- (void)hideComposeBar {
+    if (composeBar == nil) {
+        return;
+    }
+    // Resign before letting go of the accessory view (see presentKeyBarWithSystemKeyboard:)
+    [composeBar.field resignFirstResponder];
+    composeBar.field.inputAccessoryView = nil;
+    [composeBar removeFromSuperview];
+}
+
+- (void)queueCompose:(NSDictionary *)request {
+    BOOL deleteOnly = [request[@"text"] length] == 0 && ![request[@"enter"] boolValue];
+    if (deleteOnly && [request[@"delete"] integerValue] == 0) {
+        return;
+    }
+    // Deletes in a row become one request
+    NSDictionary *last = composeQueue.lastObject;
+    if (deleteOnly && last != nil && [last[@"text"] length] == 0 && ![last[@"enter"] boolValue]) {
+        composeQueue[composeQueue.count - 1] = @{@"text": @"", @"enter": @NO,
+                                                 @"delete": @([last[@"delete"] integerValue] + [request[@"delete"] integerValue])};
+    } else {
+        [composeQueue addObject:request];
+    }
+    [self pumpCompose];
+}
+
+- (void)pumpCompose {
+    if (composeSending || composeQueue.count == 0 || self.phoneClient == nil) {
+        return;
+    }
+    NSDictionary *request = composeQueue.firstObject;
+    [composeQueue removeObjectAtIndex:0];
+    composeSending = YES;
+    __weak StreamView *weakSelf = self;
+    [self.phoneClient sendText:request[@"text"] enter:[request[@"enter"] boolValue] delete:[request[@"delete"] integerValue]
+                    completion:^(NSDictionary *result) {
+        StreamView *strongSelf = weakSelf;
+        if (strongSelf == nil) {
+            return;
+        }
+        strongSelf->composeSending = NO;
+        if ([result[@"ok"] boolValue]) {
+            [strongSelf->composeBar showNote:nil];
+            [strongSelf askWherePhoneFieldIs];   // a sent message can move the field
+        } else {
+            NSString *why = [result[@"error"] isKindOfClass:[NSString class]] ? result[@"error"] : @"The phone could not be reached";
+            Log(LOG_W, @"Compose bar: %@", why);
+            // Nothing is lost: what did not get there goes back into the bar
+            NSString *text = request[@"text"];
+            PhoneComposeField *field = strongSelf->composeBar.field;
+            if (text.length > 0) {
+                field.text = [text stringByAppendingString:field.text ?: @""];
+            }
+            [strongSelf->composeQueue removeAllObjects];
+            [strongSelf->composeBar showNote:why];
+        }
+        [strongSelf pumpCompose];
+    }];
+}
+#endif
 
 /// Lifts the picture just far enough that the caret clears the top of the keyboard.
 ///
@@ -664,6 +886,12 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
         [self liftPictureBy:0];
         return;
     }
+#if !TARGET_OS_TV
+    // The compose bar sits on the keyboard: the field has to clear it too
+    if (composeBar.superview != nil) {
+        keyboardTop -= composeBar.bounds.size.height > 0 ? composeBar.bounds.size.height : 48;
+    }
+#endif
 
     // A line of clearance, so the caret is not sitting exactly on the keyboard's edge.
     CGFloat margin = height * video.height + 8;
@@ -872,6 +1100,7 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
 /// Takes the keyboard line down without touching the pad.
 - (void)teardownKeyboardBar {
     [keyBar releaseHeldModifiers];
+    [self hideComposeBar];
     [keyInputField resignFirstResponder];
     keyInputField.inputAccessoryView = nil;
     [keyBar removeFromSuperview];
@@ -885,9 +1114,9 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
 /// subsequent keystroke would silently arrive modified.
 - (void)dismissKeyBar {
     [caretTracker stop];
-    [phoneCaretTimer invalidate];
-    phoneCaretTimer = nil;
     caretTracker = nil;
+    [phoneFieldTimer invalidate];
+    phoneFieldTimer = nil;
     [self liftPictureBy:0];
     [self teardownKeyboardBar];
     [macroPad removeFromSuperview];
