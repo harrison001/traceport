@@ -4,6 +4,7 @@
 //
 
 #import "PhoneActionClient.h"
+#import <Intents/Intents.h>
 #import "CaretTracker.h"
 #import "Utils.h"
 #include <Limelight.h>
@@ -182,6 +183,16 @@ static NSString *CallAppName(NSDictionary *call);
     [self send:request completion:completion];
 }
 
+- (void)dial:(NSString *)number completion:(void (^)(NSDictionary *_Nullable))completion {
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:
+                                    [NSURL URLWithString:[_base stringByAppendingString:@"/phone/call"]]];
+    request.HTTPMethod = @"POST";
+    request.timeoutInterval = 10.0;
+    [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
+    request.HTTPBody = [NSJSONSerialization dataWithJSONObject:@{@"action": @"dial", @"number": number} options:0 error:nil];
+    [self send:request completion:completion];
+}
+
 - (void)callAction:(NSString *)action callId:(NSString *)callId completion:(void (^)(NSDictionary *_Nullable))completion {
     NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:
                                     [NSURL URLWithString:[_base stringByAppendingString:@"/phone/call"]]];
@@ -303,8 +314,9 @@ didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge
     config.maximumCallGroups = 1;
     config.maximumCallsPerCallGroup = 1;
     config.supportedHandleTypes = [NSSet setWithObjects:@(CXHandleTypePhoneNumber), @(CXHandleTypeGeneric), nil];
-    // these are the phone at home's calls, not this device's: keep them out of its Recents
-    config.includesCallsInRecents = NO;
+    // The phone at home's calls go into this device's Recents too (2026-11-05): missed ones are
+    // seen there, and a tap calls back through the phone at home (callBackFromActivity:)
+    config.includesCallsInRecents = YES;
     _provider = [[CXProvider alloc] initWithConfiguration:config];
     [_provider setDelegate:self queue:dispatch_get_main_queue()];
 
@@ -335,8 +347,80 @@ didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge
 
 - (CXHandle *)handleFor:(NSDictionary *)call {
     NSString *number = [call[@"number"] isKindOfClass:[NSString class]] ? call[@"number"] : @"";
-    return number.length > 0 ? [[CXHandle alloc] initWithType:CXHandleTypePhoneNumber value:number]
-                             : [[CXHandle alloc] initWithType:CXHandleTypeGeneric value:@"Unknown"];
+    if (number.length > 0) {
+        return [[CXHandle alloc] initWithType:CXHandleTypePhoneNumber value:number];
+    }
+    // What Recents shows for an app's call: "wolf2079 (WeChat)" rather than a row of "Unknown"
+    NSString *name = [call[@"name"] isKindOfClass:[NSString class]] ? call[@"name"] : @"";
+    NSString *app = CallAppName(call);
+    NSString *value = name.length > 0 ? (app != nil && ![app isEqualToString:@"app call"] ? [NSString stringWithFormat:@"%@ (%@)", name, app] : name)
+                                      : @"Unknown";
+    return [[CXHandle alloc] initWithType:CXHandleTypeGeneric value:value];
+}
+
+#pragma mark Call-back from Recents
+
+- (BOOL)callBackFromActivity:(NSUserActivity *)activity {
+    INPersonHandle *handle = nil;
+    if (@available(iOS 13.0, *)) {
+        if ([activity.interaction.intent isKindOfClass:[INStartCallIntent class]]) {
+            handle = ((INStartCallIntent *)activity.interaction.intent).contacts.firstObject.personHandle;
+        }
+    }
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    if (handle == nil && [activity.interaction.intent isKindOfClass:[INStartAudioCallIntent class]]) {
+        handle = ((INStartAudioCallIntent *)activity.interaction.intent).contacts.firstObject.personHandle;
+    }
+#pragma clang diagnostic pop
+    if (handle == nil) {
+        return NO;
+    }
+    NSDictionary<NSString *, NSDictionary *> *gateways = [PhoneActionClient knownGateways];
+    NSString *host = nil;
+    for (NSDictionary *g in gateways.allValues) {
+        if ([g[@"uuid"] isKindOfClass:[NSString class]]) {
+            host = g[@"uuid"];
+            break;
+        }
+    }
+    void (^open)(NSString *) = ^(NSString *uuid) {
+        if (uuid == nil) return;
+        TracePortPendingCallHost = uuid;
+        [[NSNotificationCenter defaultCenter] postNotificationName:TracePortOpenHostNotification object:uuid];
+    };
+    NSString *number = handle.type == INPersonHandleTypePhoneNumber ? handle.value : nil;
+    if (number.length == 0) {
+        // a WeChat/WhatsApp entry: nothing to dial from here, open the phone to call back there
+        Log(LOG_I, @"Calls: Recents tap on an app's call; opening the phone");
+        open(host);
+        return YES;
+    }
+    Log(LOG_I, @"Calls: calling back %@ from the phone at home", number);
+    __block BOOL done = NO;
+    __block NSUInteger pending = gateways.count;
+    for (NSString *base in gateways) {
+        NSDictionary *g = gateways[base];
+        PhoneActionClient *c = [[PhoneActionClient alloc] initWithBase:base serverCert:g[@"cert"]];
+        [c dial:number completion:^(NSDictionary *result) {
+            [c invalidate];
+            pending--;
+            if (done) return;
+            if ([result[@"ok"] boolValue]) {
+                done = YES;
+                Log(LOG_I, @"Calls: dial → %@ (%@)", result[@"done"], base);
+                open([g[@"uuid"] isKindOfClass:[NSString class]] ? g[@"uuid"] : host);
+            } else if (pending == 0) {
+                done = YES;
+                Log(LOG_W, @"Calls: dial failed: %@", result[@"error"] ?: @"gateway unreachable");
+                open(host);   // still show the phone: the number can be dialled there by hand
+            }
+        }];
+    }
+    if (gateways.count == 0) {
+        open(host);
+    }
+    return YES;
 }
 
 /// One ring or end, from a push or from the stream's polling. A push must end in a reported call

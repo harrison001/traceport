@@ -44,6 +44,10 @@ extern NSString *_Nullable TracePortPendingCallHost;
 /// nil when unreachable. Main queue.
 - (void)fetchCall:(void (^)(NSDictionary *_Nullable call))completion;
 
+/// Calls `number` from the phone at home, through its own SIM (a call-back from Recents). Main
+/// queue; {ok, error?}, nil when unreachable.
+- (void)dial:(NSString *)number completion:(void (^)(NSDictionary *_Nullable result))completion;
+
 /// Answers ("answer") or hangs up ("hangup") the phone's call `callId`. Main queue; nil when
 /// unreachable, else {ok, error?}.
 - (void)callAction:(NSString *)action callId:(NSString *)callId completion:(void (^)(NSDictionary *_Nullable result))completion;
@@ -121,6 +125,11 @@ extern NSString *_Nullable TracePortPendingCallHost;
 /// Seconds since the last hand-off (a large number if never): the stream waits for the audio
 /// session to be released before it starts.
 - (NSTimeInterval)secondsSinceHandOff;
+
+/// A tap on one of the phone's calls in this device's Recents (an INStartCallIntent): a phone
+/// number is called back from the phone at home, and its stream opens to talk; a WeChat or
+/// WhatsApp entry just opens the stream. Returns NO when the activity is not a call.
+- (BOOL)callBackFromActivity:(NSUserActivity *)activity;
 
 @end
 

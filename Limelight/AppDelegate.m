@@ -43,7 +43,19 @@
     self.window.rootViewController = [[UIStoryboard storyboardWithName:storyboardName bundle:nil] instantiateInitialViewController];
     appDelegate.window = self.window;
     [self.window makeKeyAndVisible];
+#if !TARGET_OS_TV
+    // Launched by a tap in Recents on one of the phone's calls
+    for (NSUserActivity *activity in connectionOptions.userActivities) {
+        [[PhoneCallCenter shared] callBackFromActivity:activity];
+    }
+#endif
 }
+
+#if !TARGET_OS_TV
+- (void)scene:(UIScene *)scene continueUserActivity:(NSUserActivity *)userActivity {
+    [[PhoneCallCenter shared] callBackFromActivity:userActivity];
+}
+#endif
 
 #if !TARGET_OS_TV
 - (void)windowScene:(UIWindowScene *)windowScene performActionForShortcutItem:(UIApplicationShortcutItem *)shortcutItem completionHandler:(void (^)(BOOL succeeded))completionHandler {
