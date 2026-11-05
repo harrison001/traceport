@@ -183,6 +183,16 @@ static NSString *CallAppName(NSDictionary *call);
     [self send:request completion:completion];
 }
 
+- (void)openApp:(NSString *)source completion:(void (^)(NSDictionary *_Nullable))completion {
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:
+                                    [NSURL URLWithString:[_base stringByAppendingString:@"/phone/open"]]];
+    request.HTTPMethod = @"POST";
+    request.timeoutInterval = 15.0;
+    [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
+    request.HTTPBody = [NSJSONSerialization dataWithJSONObject:@{@"app": source} options:0 error:nil];
+    [self send:request completion:completion];
+}
+
 - (void)dial:(NSString *)number completion:(void (^)(NSDictionary *_Nullable))completion {
     NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:
                                     [NSURL URLWithString:[_base stringByAppendingString:@"/phone/call"]]];
@@ -391,8 +401,31 @@ didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge
     };
     NSString *number = handle.type == INPersonHandleTypePhoneNumber ? handle.value : nil;
     if (number.length == 0) {
-        // a WeChat/WhatsApp entry: nothing to dial from here, open the phone to call back there
-        Log(LOG_I, @"Calls: Recents tap on an app's call; opening the phone");
+        // A WeChat/WhatsApp entry: nothing to dial from here. Open the phone, with that app
+        // already in front (its name is in the handle: "wolf2079 (WeChat)"), to call back there.
+        NSString *source = nil;
+        NSRange l = [handle.value rangeOfString:@"(" options:NSBackwardsSearch];
+        if (l.location != NSNotFound && [handle.value hasSuffix:@")"]) {
+            NSString *app = [handle.value substringWithRange:NSMakeRange(l.location + 1, handle.value.length - l.location - 2)];
+            NSDictionary<NSString *, NSString *> *sources = @{
+                @"WeChat": @"wechat", @"WhatsApp": @"whatsapp", @"Messenger": @"messenger", @"Telegram": @"telegram",
+                @"LINE": @"line", @"Signal": @"signal", @"Skype": @"skype", @"Viber": @"viber",
+                @"FaceTime": @"facetime", @"Teams": @"teams", @"Zoom": @"zoom", @"Google Meet": @"meet",
+            };
+            source = sources[app];
+        }
+        Log(LOG_I, @"Calls: Recents tap on an app's call (%@); opening the phone", source ?: @"app unknown");
+        if (source != nil) {
+            for (NSString *base in gateways) {
+                PhoneActionClient *c = [[PhoneActionClient alloc] initWithBase:base serverCert:gateways[base][@"cert"]];
+                [c openApp:source completion:^(NSDictionary *result) {
+                    [c invalidate];
+                    if ([result[@"ok"] boolValue]) {
+                        Log(LOG_I, @"Calls: opened %@ on the phone (%@)", result[@"done"], base);
+                    }
+                }];
+            }
+        }
         open(host);
         return YES;
     }

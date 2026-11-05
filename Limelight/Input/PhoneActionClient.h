@@ -44,6 +44,10 @@ extern NSString *_Nullable TracePortPendingCallHost;
 /// nil when unreachable. Main queue.
 - (void)fetchCall:(void (^)(NSDictionary *_Nullable call))completion;
 
+/// Brings a calling app ("wechat", "whatsapp"…) to the front on the phone at home. Main queue;
+/// {ok, error?}, nil when unreachable.
+- (void)openApp:(NSString *)source completion:(void (^)(NSDictionary *_Nullable result))completion;
+
 /// Calls `number` from the phone at home, through its own SIM (a call-back from Recents). Main
 /// queue; {ok, error?}, nil when unreachable.
 - (void)dial:(NSString *)number completion:(void (^)(NSDictionary *_Nullable result))completion;
