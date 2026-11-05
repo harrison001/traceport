@@ -303,6 +303,9 @@ didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge
     /// polling can still see such a call on the gateway for a moment; it must not ring again.
     NSMutableDictionary<NSUUID *, NSDate *> *_ended;
     NSMutableSet<NSString *> *_silenced;                 // calls a Focus kept from ringing (a notice is up)
+    CXCallController *_callController;
+    /// call-backs reported to CallKit only so they show in Recents → what to run once ended
+    NSMutableDictionary<NSUUID *, NSDictionary *> *_outgoing;
 }
 
 + (instancetype)shared {
@@ -319,6 +322,8 @@ didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge
     _calls = [NSMutableDictionary dictionary];
     _ended = [NSMutableDictionary dictionary];
     _silenced = [NSMutableSet set];
+    _callController = [[CXCallController alloc] init];
+    _outgoing = [NSMutableDictionary dictionary];
     CXProviderConfiguration *config = [[CXProviderConfiguration alloc] init];
     config.supportsVideo = NO;
     config.maximumCallGroups = 1;
@@ -442,7 +447,9 @@ didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge
             if ([result[@"ok"] boolValue]) {
                 done = YES;
                 Log(LOG_I, @"Calls: dial → %@ (%@)", result[@"done"], base);
-                open([g[@"uuid"] isKindOfClass:[NSString class]] ? g[@"uuid"] : host);
+                NSString *uuid = [g[@"uuid"] isKindOfClass:[NSString class]] ? g[@"uuid"] : host;
+                // into this device's Recents as an outgoing call, then the stream to talk
+                [self recordOutgoing:number then:^{ open(uuid); }];
             } else if (pending == 0) {
                 done = YES;
                 Log(LOG_W, @"Calls: dial failed: %@", result[@"error"] ?: @"gateway unreachable");
@@ -766,6 +773,49 @@ static NSString *CallAppName(NSDictionary *call) {
     }
     [self control:@"hangup" uuid:action.callUUID done:^(BOOL ok, NSString *hostUuid) {}];
     [_calls removeObjectForKey:action.callUUID];
+}
+
+/// Puts a call-back into this device's Recents: CallKit only records calls it was told about, so
+/// the call the phone at home is making is reported here as an outgoing call and ended at once —
+/// its sound goes through the stream, which cannot start its audio while a CallKit call holds the
+/// session. `then` runs after that (the stream opens).
+- (void)recordOutgoing:(NSString *)number then:(void (^)(void))then {
+    NSUUID *uuid = [NSUUID UUID];
+    _outgoing[uuid] = @{@"number": number, @"then": [then copy]};
+    CXHandle *handle = [[CXHandle alloc] initWithType:CXHandleTypePhoneNumber value:number];
+    CXStartCallAction *start = [[CXStartCallAction alloc] initWithCallUUID:uuid handle:handle];
+    [_callController requestTransaction:[[CXTransaction alloc] initWithAction:start] completion:^(NSError *error) {
+        if (error != nil) {
+            Log(LOG_W, @"Calls: could not record the call-back in Recents (%@)", error.localizedDescription);
+            NSDictionary *o = self->_outgoing[uuid];
+            [self->_outgoing removeObjectForKey:uuid];
+            void (^next)(void) = o[@"then"];
+            if (next) next();
+        }
+    }];
+}
+
+- (void)provider:(CXProvider *)provider performStartCallAction:(CXStartCallAction *)action {
+    NSDictionary *o = _outgoing[action.callUUID];
+    if (o == nil) {
+        [action fail];   // nothing starts calls here except a call-back
+        return;
+    }
+    CXCallUpdate *update = [[CXCallUpdate alloc] init];
+    update.remoteHandle = action.handle;
+    update.localizedCallerName = [NSString stringWithFormat:@"%@ · home phone", o[@"number"]];
+    [provider reportCallWithUUID:action.callUUID updated:update];
+    [action fulfill];
+    [provider reportOutgoingCallWithUUID:action.callUUID startedConnectingAtDate:nil];
+    [provider reportOutgoingCallWithUUID:action.callUUID connectedAtDate:nil];
+    NSUUID *uuid = action.callUUID;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [provider reportCallWithUUID:uuid endedAtDate:nil reason:CXCallEndedReasonRemoteEnded];
+        self->_handedOff = [NSDate date];   // the stream waits for the audio session to be let go
+        [self->_outgoing removeObjectForKey:uuid];
+        void (^next)(void) = o[@"then"];
+        if (next) next();
+    });
 }
 
 - (void)provider:(CXProvider *)provider didDeactivateAudioSession:(AVAudioSession *)audioSession {
